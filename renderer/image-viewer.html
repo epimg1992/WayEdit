@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Image Viewer — Route View</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; }
+    html, body {
+      height: 100%; background: #07090d; color: #e6edf3;
+      font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      overflow: hidden; display: flex; flex-direction: column; user-select: none;
+    }
+    #toolbar {
+      flex: none; display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; background: #0d1219; border-bottom: 1px solid #232c38;
+      flex-wrap: nowrap; min-width: 0;
+    }
+    #filename {
+      flex: 1; font-size: 10px; color: #8b97a7;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+    }
+    #wp-badge {
+      font-size: 10px; font-weight: 700; color: #ffb454;
+      white-space: nowrap; flex: none;
+    }
+    .filters { display: flex; gap: 4px; flex: none; }
+    .filter-btn {
+      font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 3px;
+      border: 1px solid #2c3d52; background: #161c25; color: #8b97a7;
+      cursor: pointer; transition: all .1s;
+    }
+    .filter-btn:hover { border-color: #4fd1e0; color: #e6edf3; }
+    .filter-btn.active { color: #07090d; border-color: transparent; }
+    .filter-btn[data-band="all"].active  { background: #4a4a5a; color: #e6edf3; }
+    .filter-btn[data-band="ir"].active   { background: #ff7a59; }
+    .filter-btn[data-band="wide"].active { background: #4fd1e0; }
+    .filter-btn[data-band="zoom"].active { background: #9b8cff; }
+    .band {
+      font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 3px;
+      color: #07090d; flex: none;
+    }
+    .band-ir   { background: #ff7a59; }
+    .band-wide { background: #4fd1e0; }
+    .band-zoom { background: #9b8cff; }
+    .band-pano { background: #2dd4a7; }
+    .scope-label { font-size: 10px; color: #ffb454; white-space: nowrap; flex: none; }
+    .scope-all.filter-btn { background: #2a2014; border-color: #ffb454; color: #ffb454; }
+    .scope-all.filter-btn:hover { background: #3a2c18; }
+    .type-video { background: #4a9eff; color: #fff; }
+    #counter { font-size: 11px; color: #ffb454; flex: none; white-space: nowrap; }
+    #stage {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      position: relative; overflow: hidden; background: #07090d;
+    }
+    #img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+    #vid { max-width: 100%; max-height: 100%; display: none; }
+    .nav-btn {
+      position: absolute; top: 50%; transform: translateY(-50%);
+      background: #0c111980; border: 1px solid #232c38; border-radius: 8px;
+      color: #e6edf3; font-size: 28px; line-height: 1; padding: 14px 18px;
+      cursor: pointer; z-index: 2; transition: background .12s, border-color .12s;
+    }
+    .nav-btn:hover { background: #1c2734; border-color: #4fd1e0; color: #4fd1e0; }
+    .nav-btn:disabled { opacity: .25; cursor: default; }
+    #btn-prev { left: 14px; }
+    #btn-next { right: 14px; }
+    #empty-msg {
+      position: absolute; color: #4a5568; font-size: 13px; pointer-events: none;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <div id="filename">Loading…</div>
+    <div id="wp-badge"></div>
+    <span id="band-badge" class="band" style="display:none"></span>
+    <span id="type-badge" class="band type-video" style="display:none">VIDEO</span>
+    <div class="filters">
+      <button class="filter-btn active" data-band="all">ALL</button>
+      <button class="filter-btn" data-band="ir">IR</button>
+      <button class="filter-btn" data-band="wide">WIDE</button>
+    </div>
+    <span id="scope-label" class="scope-label" style="display:none"></span>
+    <button id="scope-all" class="filter-btn scope-all" style="display:none" title="Show all images in sequence">↩ All images</button>
+    <div id="counter"></div>
+  </div>
+  <div id="stage">
+    <button class="nav-btn" id="btn-prev" title="Previous (←)">‹</button>
+    <img id="img" alt="" />
+    <video id="vid" controls></video>
+    <div id="empty-msg">No images match this filter.</div>
+    <button class="nav-btn" id="btn-next" title="Next (→)">›</button>
+  </div>
+
+  <script>
+    let allPhotos = [];
+    let filtered = [];
+    let idx = 0;
+    let activeFilter = null;
+    let scopeNames = null; // Set of filenames when limited to a search subset; null = all
+
+    const inScope = (p) => !scopeNames || scopeNames.has(p.name);
+
+    // Rebuild the visible list from scope (search subset) + band filter, keeping the
+    // current photo selected if it survives.
+    function recompute() {
+      const current = filtered[idx];
+      filtered = allPhotos.filter(inScope).filter((p) => !activeFilter || p.band === activeFilter);
+      const ni = current ? filtered.findIndex((p) => p.name === current.name) : -1;
+      idx = ni >= 0 ? ni : 0;
+      show(idx);
+    }
+
+    function applyFilter(band) {
+      activeFilter = band || null;
+      document.querySelectorAll('.filters .filter-btn').forEach((b) =>
+        b.classList.toggle('active', b.dataset.band === (band || 'all'))
+      );
+      recompute();
+    }
+
+    function setScope(scope) {
+      const lbl = document.getElementById('scope-label');
+      const btn = document.getElementById('scope-all');
+      if (scope && scope.names && scope.names.length) {
+        scopeNames = new Set(scope.names);
+        lbl.textContent = '🔍 "' + scope.label + '" (' + scope.names.length + ')';
+        lbl.style.display = '';
+        btn.style.display = '';
+      } else {
+        scopeNames = null;
+        lbl.style.display = 'none';
+        btn.style.display = 'none';
+      }
+    }
+    document.getElementById('scope-all').onclick = () => { setScope(null); recompute(); };
+
+    function show(i) {
+      const imgEl = document.getElementById('img');
+      const vidEl = document.getElementById('vid');
+      const emptyEl = document.getElementById('empty-msg');
+
+      if (!filtered.length) {
+        imgEl.style.display = 'none';
+        vidEl.style.display = 'none'; vidEl.src = '';
+        emptyEl.style.display = 'block';
+        document.getElementById('filename').textContent = '—';
+        document.getElementById('counter').textContent = '0 / 0';
+        document.getElementById('wp-badge').textContent = '';
+        document.getElementById('band-badge').style.display = 'none';
+        document.getElementById('type-badge').style.display = 'none';
+        document.getElementById('btn-prev').disabled = true;
+        document.getElementById('btn-next').disabled = true;
+        return;
+      }
+
+      emptyEl.style.display = 'none';
+      idx = Math.max(0, Math.min(i, filtered.length - 1));
+      const p = filtered[idx];
+
+      if (p.type === 'video') {
+        imgEl.style.display = 'none';
+        vidEl.style.display = 'block';
+        if (vidEl.src !== p.url) { vidEl.pause(); vidEl.src = p.url; }
+        document.getElementById('type-badge').style.display = '';
+      } else {
+        vidEl.style.display = 'none'; vidEl.pause(); vidEl.src = '';
+        imgEl.style.display = 'block';
+        imgEl.src = p.url;
+        document.getElementById('type-badge').style.display = 'none';
+      }
+
+      document.getElementById('filename').textContent = p.name;
+      document.getElementById('counter').textContent = (idx + 1) + ' / ' + filtered.length;
+      document.title = p.name + ' — Route View';
+
+      // Waypoint badge
+      const wpEl = document.getElementById('wp-badge');
+      wpEl.textContent = p._wpIndex ? 'WP #' + p._wpIndex : '';
+
+      // Band badge
+      const badge = document.getElementById('band-badge');
+      if (p.band) {
+        badge.textContent = p.band === 'ir' ? 'IR' : p.band === 'zoom' ? 'ZOOM'
+          : p.band === 'pano' ? 'PANO' : 'WIDE';
+        badge.className = 'band band-' + p.band;
+        badge.style.display = '';
+      } else {
+        badge.style.display = 'none';
+      }
+
+      document.getElementById('btn-prev').disabled = idx === 0;
+      document.getElementById('btn-next').disabled = idx === filtered.length - 1;
+    }
+
+    document.getElementById('btn-prev').onclick = () => show(idx - 1);
+    document.getElementById('btn-next').onclick = () => show(idx + 1);
+
+    document.querySelectorAll('.filters .filter-btn').forEach((btn) => {
+      btn.onclick = () => applyFilter(btn.dataset.band === 'all' ? null : btn.dataset.band);
+    });
+
+    document.addEventListener('keydown', (e) => {
+      const vid = document.getElementById('vid');
+      if (vid.style.display !== 'none' && document.activeElement === vid) return;
+      if (e.key === 'ArrowLeft')  { show(idx - 1); e.preventDefault(); }
+      if (e.key === 'ArrowRight') { show(idx + 1); e.preventDefault(); }
+    });
+
+    if (window.viewer) {
+      window.viewer.onPhotos(({ photos: p, index, filter, scope }) => {
+        allPhotos = p;
+        activeFilter = filter || null;
+        document.querySelectorAll('.filters .filter-btn').forEach((b) =>
+          b.classList.toggle('active', b.dataset.band === (activeFilter || 'all'))
+        );
+        setScope(scope); // search subset (or null = all images in sequence)
+        filtered = allPhotos.filter(inScope).filter((ph) => !activeFilter || ph.band === activeFilter);
+        // Find position of the opened photo within the filtered set
+        const opened = allPhotos[index];
+        const fi = opened ? filtered.findIndex((ph) => ph.name === opened.name) : 0;
+        show(fi >= 0 ? fi : 0);
+      });
+    }
+  </script>
+</body>
+</html>

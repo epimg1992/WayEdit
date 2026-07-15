@@ -1,0 +1,72 @@
+{
+  "name": "wayedit",
+  "version": "1.0.0",
+  "description": "Offline DJI FlightHub 2 KMZ/WPML route editor for Windows 11",
+  "main": "src/main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node scripts/setup.js",
+    "build:renderer": "node scripts/setup.js --bundle-only",
+    "start": "npm run build:renderer && electron .",
+    "test": "node test/kmz.test.js",
+    "dist": "npm run build:renderer && electron-builder --win",
+    "dist:mac": "npm run build:renderer && electron-builder --mac"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.10",
+    "cesium": "1.123.0",
+    "exifr": "7.1.3",
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "electron": "31.7.7",
+    "electron-builder": "24.13.3",
+    "esbuild": "^0.24.2"
+  },
+  "build": {
+    "appId": "com.field.wayedit",
+    "productName": "WayEdit",
+    "asar": false,
+    "files": [
+      "src/**",
+      "renderer/**",
+      "scripts/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist-build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] },
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ],
+      "category": "public.app-category.utilities",
+      "icon": "assets/icon-mac.png",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

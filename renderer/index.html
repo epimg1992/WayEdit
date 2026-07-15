@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Route View</title>
+  <!-- Cesium is bundled locally by postinstall so the app runs fully offline -->
+  <script>window.CESIUM_BASE_URL = 'vendor/cesium/';</script>
+  <link rel="stylesheet" href="vendor/cesium/Widgets/widgets.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-drone" viewBox="0 0 100 100" width="24" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Arms (X pattern) -->
+        <line x1="50" y1="50" x2="20" y2="20" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+        <line x1="50" y1="50" x2="80" y2="20" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+        <line x1="50" y1="50" x2="20" y2="80" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+        <line x1="50" y1="50" x2="80" y2="80" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+        <!-- Rotors -->
+        <circle cx="20" cy="20" r="14" stroke="currentColor" stroke-width="6"/>
+        <circle cx="80" cy="20" r="14" stroke="currentColor" stroke-width="6"/>
+        <circle cx="20" cy="80" r="14" stroke="currentColor" stroke-width="6"/>
+        <circle cx="80" cy="80" r="14" stroke="currentColor" stroke-width="6"/>
+        <!-- Body -->
+        <circle cx="50" cy="50" r="10" fill="currentColor"/>
+      </svg>
+      Route View <span class="sub">offline route viewer</span>
+    </div>
+    <div class="actions">
+      <!-- Open dropdown -->
+      <div class="dropdown" id="dd-open">
+        <button class="btn dropdown-toggle">Open ▾</button>
+        <div class="dropdown-menu">
+          <button class="dropdown-item" id="btn-sessions">Sessions…</button>
+          <button class="dropdown-item" id="btn-new-window">New window…</button>
+          <div class="dropdown-divider"></div>
+          <button class="dropdown-item" id="btn-open">Open route</button>
+          <button class="dropdown-item" id="btn-model">Load 3D model</button>
+          <button class="dropdown-item" id="btn-photos">Load mission photos</button>
+          <div class="dropdown-divider"></div>
+          <button class="dropdown-item load-all-item" id="btn-load-all">Load all…</button>
+        </div>
+      </div>
+
+      <!-- Route dropdown -->
+      <div class="dropdown" id="dd-route">
+        <button class="btn dropdown-toggle">Route ▾</button>
+        <div class="dropdown-menu">
+          <button class="dropdown-item" id="btn-uniquify">Uniquify WP names</button>
+          <button class="dropdown-item" id="btn-rename-photos">Rename matched photos</button>
+          <button class="dropdown-item" id="btn-shift">Shift route (RTK re-base)…</button>
+          <button class="dropdown-item" id="btn-export">Export KMZ</button>
+          <div class="dropdown-divider"></div>
+          <button class="dropdown-item danger" id="btn-reset">Reset session</button>
+        </div>
+      </div>
+
+      <!-- Global undo / redo (all route edits: aim, height, shift, renames) -->
+      <button id="btn-undo" class="btn btn-icon" disabled title="Undo (Ctrl+Z)">↶</button>
+      <button id="btn-redo" class="btn btn-icon" disabled title="Redo (Ctrl+Y)">↷</button>
+
+      <label class="topbar-toggle" title="Show online satellite imagery"><input type="checkbox" id="imagery" /> Satellite</label>
+      <label class="topbar-toggle" title="Camera view (FPV) — Shift+F"><input type="checkbox" id="fpv" /> FPV</label>
+      <label class="topbar-toggle" title="How the route's heights are read for 3D placement">Height
+        <select id="height-mode" class="topbar-select">
+          <option value="absolute">Absolute</option>
+          <option value="alt">ALT (+ground)</option>
+          <option value="asl">ASL</option>
+        </select>
+      </label>
+      <input id="ground-alt" class="topbar-num" type="text" inputmode="decimal" placeholder="ground m" title="Takeoff ground altitude (m), for ALT" style="display:none" />
+      <button id="ground-auto" class="btn btn-icon" title="Read the ground altitude from the loaded 3D model" style="display:none">Auto</button>
+      <button id="height-unit" class="btn btn-icon" title="Toggle height display units (metres / feet)">m</button>
+
+      <span class="spacer"></span>
+
+      <label class="namefield">Route name
+        <textarea id="route-name" rows="1" placeholder="route-name" spellcheck="false" wrap="off" title="Drag the right edge to widen"></textarea>
+      </label>
+      <div class="font-ctrl" title="Font size">
+        <button id="btn-font-down" class="btn btn-icon" title="Smaller text">A−</button>
+        <button id="btn-font-up" class="btn btn-icon" title="Larger text">A+</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="grid" id="main-grid">
+    <!-- Left: waypoint list -->
+    <section class="rail left" id="rail-left">
+      <div class="rail-head">
+        <h2>Waypoints</h2>
+        <span id="wp-count" class="count">—</span>
+      </div>
+      <div class="search-wrap">
+        <input id="wp-search" class="search-input" type="search" placeholder="Search waypoint # or name…" autocomplete="off" />
+      </div>
+      <div class="table-wrap">
+        <table id="wp-table">
+          <thead>
+            <tr><th>#</th><th>📷</th></tr>
+          </thead>
+          <tbody id="wp-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="col-handle" id="handle-left" title="Drag to resize"></div>
+
+    <!-- Center: 3D viewer -->
+    <section class="viewer-pane">
+      <div id="viewer"></div>
+      <!-- FPV camera overlay: lens bar, zoom/IR boxes, heading -->
+      <div id="fpv-overlay" class="fpv-overlay hidden">
+        <div id="fpv-lens-bar" class="fpv-lens-bar"></div>
+        <svg id="fpv-boxes-svg" class="fpv-boxes-svg"></svg>
+      </div>
+      <!-- Loaded-files badge: collapsed pill, expands on hover to show route / model / photo set -->
+      <div id="files-badge" class="files-badge" title="">
+        <div class="files-badge-pill">🗂 <span id="files-badge-count">0/3</span></div>
+        <div class="files-badge-body">
+          <div class="files-row"><span class="files-k">Route</span><span class="files-v" id="files-route">—</span></div>
+          <div class="files-row"><span class="files-k">3D model</span><span class="files-v" id="files-model">—</span></div>
+          <div class="files-row"><span class="files-k">Photos</span><span class="files-v" id="files-photos">—</span></div>
+        </div>
+      </div>
+
+      <!-- Route-shift panel (RTK re-base): nudge the whole route E/N/Up against the loaded model -->
+      <div id="shift-panel" class="shift-panel hidden">
+        <div class="shift-head">
+          <span class="shift-title">SHIFT ROUTE <span class="shift-sub">RTK re-base</span></span>
+          <button id="shift-close" class="shift-x" title="Close (keeps applied shift)">✕</button>
+        </div>
+        <div class="shift-hint">Load the 3D model for the RTK source you'll fly with, then nudge the route until the waypoints sit on the structures.</div>
+        <div class="shift-grid">
+          <div class="shift-pad">
+            <button class="shift-nudge" data-dx="0"  data-dy="1"  title="North">▲</button>
+            <div class="shift-pad-mid">
+              <button class="shift-nudge" data-dx="-1" data-dy="0" title="West">◀</button>
+              <button class="shift-nudge" data-dx="1"  data-dy="0" title="East">▶</button>
+            </div>
+            <button class="shift-nudge" data-dx="0"  data-dy="-1" title="South">▼</button>
+          </div>
+          <div class="shift-fields">
+            <label>Step <input id="shift-step" type="text" inputmode="decimal" value="0.5" /><span id="shift-step-unit">m</span></label>
+            <label>Up <button class="shift-nudge shift-updn" data-dz="1">▲</button><button class="shift-nudge shift-updn" data-dz="-1">▼</button></label>
+            <div class="shift-total">Applied&nbsp;<span id="shift-total">E 0.00 · N 0.00 · U 0.00</span></div>
+          </div>
+        </div>
+        <div class="shift-actions">
+          <button id="shift-reset" class="shift-btn" title="Undo the shift applied this session">Reset</button>
+          <span class="shift-spacer"></span>
+          <button id="shift-done" class="shift-btn confirm">Done</button>
+        </div>
+        <!-- Saved RTK offsets: measure a site's LOCAL/POLARIS → DOCK offset once (align the
+             route, Save), then re-apply it to any route on that site with one click. -->
+        <div class="shift-presets">
+          <div class="shift-presets-title">SAVED RTK OFFSETS</div>
+          <div class="shift-presets-row">
+            <select id="shift-preset" class="shift-preset-sel"><option value="">— pick a saved offset —</option></select>
+          </div>
+          <div class="shift-presets-row">
+            <button id="shift-apply-preset" class="shift-btn" title="Apply the selected offset to this route (e.g. LOCAL → DOCK)">Apply</button>
+            <button id="shift-apply-preset-inv" class="shift-btn" title="Apply the selected offset REVERSED (e.g. DOCK → LOCAL)">Apply ⇄</button>
+            <span class="shift-spacer"></span>
+            <button id="shift-del-preset" class="shift-btn" title="Delete the selected saved offset">✕</button>
+          </div>
+          <div class="shift-presets-row">
+            <input id="shift-preset-name" type="text" placeholder="name… e.g. Lavaca LOCAL→DOCK" />
+            <button id="shift-save-preset" class="shift-btn" title="Save the currently applied shift (the Applied readout) under this name">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom-left: collapsible keyboard controls -->
+      <button id="fpv-keys-toggle" class="fpv-keys-toggle hidden" title="Show/hide keyboard controls">⌨ Controls</button>
+      <div id="fpv-hint" class="fpv-keys hidden collapsed">
+        <div><span>W/S</span> Forward · Back &nbsp; <span>A/D</span> Strafe &nbsp; <span>Q/E</span> Yaw</div>
+        <div><span>C</span> Ascend &nbsp; <span>Z</span> Descend &nbsp; <span>V</span> Snap to waypoint</div>
+        <div><span>1</span> Wide &nbsp; <span>2</span> Zoom &nbsp; <span>+/−</span> Adjust zoom &nbsp; <span>X</span> Speed: <span id="fpv-speed-label" class="fpv-speed-badge">Slow</span></div>
+      </div>
+
+      <!-- Bottom-right stack: AGL/zoom readout on top, camera-aim editor below -->
+      <div id="fpv-br" class="fpv-br">
+        <div id="fpv-alt" class="fpv-panel fpv-alt hidden" data-base-w="118">
+          <div class="fpv-alt-zoom"><span id="fpv-zoom-val">—</span></div>
+          <div class="fpv-alt-h"><span id="fpv-alt-val">—</span><span class="fpv-alt-unit" id="fpv-alt-unit">m AGL</span></div>
+        </div>
+        <div id="fpv-aim" class="fpv-panel fpv-aim hidden" data-base-w="250">
+          <div id="aim-shots" class="aim-shots hidden" title="This waypoint takes more than one photo — pick which shot to edit"></div>
+          <div class="aim-row">
+            <span class="aim-label">Yaw</span>
+            <input id="aim-yaw" class="aim-num" type="text" inputmode="decimal" title="Click to type a value (Enter to apply)" />
+            <span class="aim-unit">°</span>
+            <div class="aim-steppers">
+              <button class="aim-step" data-aim="yaw" data-dir="1" title="Up">▲</button>
+              <button class="aim-step" data-aim="yaw" data-dir="-1" title="Down">▼</button>
+            </div>
+          </div>
+          <div class="aim-row">
+            <span class="aim-label">Tilt</span>
+            <input id="aim-tilt" class="aim-num" type="text" inputmode="decimal" title="Click to type a value (Enter to apply)" />
+            <span class="aim-unit">°</span>
+            <div class="aim-steppers">
+              <button class="aim-step" data-aim="tilt" data-dir="1" title="Up">▲</button>
+              <button class="aim-step" data-aim="tilt" data-dir="-1" title="Down">▼</button>
+            </div>
+          </div>
+          <div class="aim-row">
+            <span class="aim-label">Alt</span>
+            <input id="aim-alt" class="aim-num" type="text" inputmode="decimal" title="Height above ground — click to type (Enter to apply)" />
+            <span class="aim-unit" id="aim-alt-unit">m</span>
+            <div class="aim-steppers">
+              <button class="aim-step" data-aim="alt" data-dir="1" title="Up">▲</button>
+              <button class="aim-step" data-aim="alt" data-dir="-1" title="Down">▼</button>
+            </div>
+          </div>
+          <div class="aim-actions">
+            <button id="aim-confirm" class="aim-action confirm" disabled title="Confirm edit (Enter)">✓ Confirm</button>
+            <button id="aim-cancel" class="aim-action cancel" disabled title="Discard edit (Esc)">✗ Cancel</button>
+            <span class="aim-spacer"></span>
+            <button id="aim-undo" class="aim-action" disabled title="Undo">↶</button>
+            <button id="aim-redo" class="aim-action" disabled title="Redo">↷</button>
+          </div>
+        </div>
+      </div>
+      <div id="viewer-empty" class="viewer-empty">Open a route to begin. Load a 3D model to fly the waypoints over your reconstruction.</div>
+    </section>
+
+    <div class="col-handle" id="handle-right" title="Drag to resize"></div>
+
+    <!-- Right: waypoint info + photos. Each section header collapses its body (click the
+         header); Photo actions and Image info can be dragged taller/shorter by their bottom edge. -->
+    <section class="rail right" id="rail-right">
+      <div class="rail-section" id="sec-actions">
+        <div class="rail-head section-toggle" title="Click to collapse / expand"><h2>Photo actions</h2><span id="wp-act-count" class="count">—</span></div>
+        <div id="wp-actions" class="wp-actions sec-body"></div>
+      </div>
+
+      <div class="rail-section" id="sec-info">
+        <div class="rail-head section-toggle" title="Click to collapse / expand"><h2>Image info</h2><span id="sel-idx" class="count">none</span></div>
+        <div id="img-info" class="img-info sec-body"></div>
+      </div>
+
+      <div class="rail-section grow" id="sec-photos">
+        <div class="rail-head photos-head section-toggle" title="Click to collapse / expand"><h2>Captured images</h2><span id="ph-count" class="count">—</span></div>
+        <div class="sec-body photos-body">
+          <div id="strip-filters" class="strip-filters">
+            <button class="strip-filter active" data-band="all">ALL</button>
+            <button class="strip-filter" data-band="wide">WIDE</button>
+            <button class="strip-filter" data-band="ir">IR</button>
+            <button class="strip-filter" data-band="zoom">ZOOM</button>
+            <button class="strip-filter" data-band="pano">PANO</button>
+          </div>
+          <div class="search-wrap">
+            <input id="photo-search" class="search-input" type="search" placeholder="Search image name…" autocomplete="off" />
+          </div>
+          <div id="photo-strip" class="photo-strip">
+            <div class="hint">No photos loaded for this waypoint.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status">Ready.</span>
+    <span id="dirty" class="dirty hidden">● unsaved edits</span>
+  </footer>
+
+  <!-- Full-screen lightbox (single image, opened from compare panel expand button) -->
+  <div id="lightbox" class="lightbox hidden">
+    <div class="lightbox-toolbar">
+      <div id="lightbox-name" class="lightbox-name"></div>
+      <button id="lightbox-close" class="lightbox-close" title="Close (Esc)">✕</button>
+    </div>
+    <div class="lightbox-stage" id="lightbox-stage">
+      <img id="lightbox-img" alt="" />
+    </div>
+  </div>
+
+  <!-- Session picker modal -->
+  <div id="session-modal" class="session-modal hidden">
+    <div class="session-dialog">
+      <div class="session-header">
+        <span>Sessions &amp; recent files</span>
+        <button id="session-modal-close" class="session-close-btn">✕</button>
+      </div>
+      <div id="session-list" class="session-list">
+        <div class="session-empty">No saved sessions yet. Load a route, model, and photos to create one.</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="vendor/cesium/Cesium.js"></script>
+  <script src="app.bundle.js"></script>
+</body>
+</html>

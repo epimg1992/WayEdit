@@ -1,0 +1,16 @@
+# Dependencies — restored by `npm install`
+node_modules/
+
+# Generated at install/build time (scripts/setup.js vendors Cesium + bundles the renderer)
+renderer/vendor/
+renderer/app.bundle.js
+
+# Build output (installers / portable exe / dmg)
+dist-build/
+dist/
+
+# Local machine state
+.claude/settings.local.json
+*.log
+Thumbs.db
+.DS_Store
