@@ -229,8 +229,8 @@ renames) is deliberately NOT in the history. Also fixed in passing: uniquifyWpNa
 nonexistent `renderWaypoints()` → now `renderList()` (was a latent crash after renaming).
 
 **FPV mouse-look:** while FPV is on, the map controller is disabled (`setFpvMouseMode(on)`) and
-dragging on the canvas steers the CAMERA — yaw+tilt; drag right → world slides right; **drag up →
-look up** (inverted per operator preference); 1:1 feel via degrees-per-pixel = current FOV / canvas
+dragging on the canvas steers the CAMERA — yaw+tilt, FPS-style per operator preference: **drag
+right → look right, drag up → look up**; 1:1 feel via degrees-per-pixel = current FOV / canvas
 width (so it slows when zoomed). Roll pinned 0. Wheel = FPV zoom (same steps as +/−). Position
 stays on the keyboard (W/S/A/D/C/Z). Pointer-captured drag (`initFpvMouseLook` in app.js, called
 from initCesium); cursor grab/grabbing. All FPV entry/exit paths wired: checkbox onchange,

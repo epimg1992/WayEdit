@@ -190,7 +190,7 @@ function initFpvMouseLook() {
     // look speed automatically slows down when the FPV zoom is punched in.
     const cam = viewer.camera;
     const degPerPx = Cesium.Math.toDegrees(cam.frustum.fov) / Math.max(1, canvas.clientWidth);
-    const heading = Cesium.Math.toDegrees(cam.heading) - dx * degPerPx; // drag right → world slides right
+    const heading = Cesium.Math.toDegrees(cam.heading) + dx * degPerPx; // drag right → look right
     const maxPitch = s ? 30 : 45; // editing: cap at the gimbal's +30° limit so view == shot
     const pitch = Math.max(-89, Math.min(maxPitch,
       Cesium.Math.toDegrees(cam.pitch) - dy * degPerPx));              // drag up → look up
