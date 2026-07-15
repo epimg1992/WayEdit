@@ -187,7 +187,7 @@ function initFpvMouseLook() {
     const degPerPx = Cesium.Math.toDegrees(cam.frustum.fov) / Math.max(1, canvas.clientWidth);
     const heading = Cesium.Math.toDegrees(cam.heading) - dx * degPerPx; // drag right → world slides right
     const pitch = Math.max(-89, Math.min(45,
-      Cesium.Math.toDegrees(cam.pitch) + dy * degPerPx));              // drag down → look up
+      Cesium.Math.toDegrees(cam.pitch) - dy * degPerPx));              // drag up → look up
     cam.setView({
       destination: Cesium.Cartesian3.clone(cam.position),
       orientation: {

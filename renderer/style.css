@@ -287,7 +287,8 @@ td.ph { color: var(--cyan); text-align: right; }
 }
 .fpv-keys-toggle:hover { border-color: var(--cyan); color: var(--ink); }
 .fpv-keys {
-  position: absolute; bottom: 12px; left: 12px; z-index: 5;
+  /* sits ABOVE the ⌨ Controls button (bottom: 12px) so the button never covers the text */
+  position: absolute; bottom: 46px; left: 12px; z-index: 5;
   background: #0c1119ee; border: 1px solid var(--line); border-radius: 8px;
   padding: 8px 12px; backdrop-filter: blur(4px);
   font-family: var(--mono); font-size: 10px; color: var(--ink-dim);
