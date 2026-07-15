@@ -264,6 +264,20 @@ are click-to-select on multi-shot WPs (`.wp-act-pick`/`.shot-active`); `state.ai
 active shot (reset to 0 on WP change), and Yaw/Tilt edit that shot while Alt stays waypoint-wide.
 FPV preview aims at the selected shot. Undo/redo entries carry the shot index.
 
+**WPML action catalog (reference: `Downloads/APP INFO.kmz`, 1 WP with every FH2 action):**
+FH2 menu → WPML: Take Photo Fixed Angle → `rotateYaw`+`gimbalRotate`+`zoom`+`orientedShoot`
+(block, GUIDs in actionUUID/orientedFilePath); Pano → `panoShot` (panoShotSubMode=panoShot_360,
+own lens); Record Current Attitude → bare `rotateYaw`+`gimbalRotate`+`zoom` triple (no capture);
+Start Recording → aim triple + `startRecord`; Stop Recording → `stopRecord`; Hover →
+`hover`(hoverTime s); Aircraft Yaw → `rotateYaw`; Gimbal Tilt → `gimbalRotate`; Take Photo →
+`takePhoto` **plus a `focus` action FH2 inserts in waylines ONLY (docs differ!)**; Camera Zoom →
+`zoom`(focalLength mm); Create Folder → `customDirName`. **Interval shots are NOT list actions:**
+they're a SEPARATE `actionGroup` with `actionTrigger` `multipleTiming`(param=seconds) or
+`multipleDistance`(param=metres) containing `takePhoto`; "End Interval Shot" just sets that
+group's actionGroupEndIndex (start/end WP indexes scope it). Only one interval group survived in
+the reference (timed superseded distance). actionIds are sequential within a group — inserting
+actions means renumbering + writing BOTH docs. Planned future feature: add actions in-app.
+
 **Helper scripts in `scripts/`** (kept): `route-variant.js` (height/zoom/tilt variants,
 auto/fixed tilt model), `raise-heights.js`. (One-off diag/edit scripts were created and
 deleted as used — recreate as needed.)
