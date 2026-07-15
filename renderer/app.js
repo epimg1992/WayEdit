@@ -215,13 +215,23 @@ function initFpvMouseLook() {
   };
   canvas.addEventListener('pointerup', endLook);
   canvas.addEventListener('pointercancel', endLook);
-  // Scroll wheel in FPV = camera zoom (same steps as the +/- keys).
+  // Scroll wheel in FPV: with a shot selected it EDITS the shot's capture zoom — a confirmable
+  // draft, same as the panel's Zoom row — updating the panel number, the green capture box, and
+  // the zoomed view live. With no shot selected it only adjusts the view zoom (like +/-).
   canvas.addEventListener('wheel', (e) => {
     if (!state.fpv) return;
     e.preventDefault();
-    const step = fpvManualZoom != null && fpvManualZoom >= 10 ? 5
-      : fpvManualZoom != null && fpvManualZoom >= 3 ? 1 : 0.5;
-    fpvAdjustZoom(e.deltaY < 0 ? step : -step);
+    const wp = aimCurrentWp();
+    const s = wp && curAimShot(wp);
+    if (s && s.zoomFocalLength != null) {
+      const cur = zoomFromFocal(s.zoomFocalLength) || 1;
+      const step = cur >= 10 ? 5 : cur >= 3 ? 1 : 0.5;
+      applyAim('zoom', cur + (e.deltaY < 0 ? step : -step), true); // skipFpv: don't snap position
+    } else {
+      const step = fpvManualZoom != null && fpvManualZoom >= 10 ? 5
+        : fpvManualZoom != null && fpvManualZoom >= 3 ? 1 : 0.5;
+      fpvAdjustZoom(e.deltaY < 0 ? step : -step);
+    }
   }, { passive: false });
 }
 
