@@ -181,12 +181,18 @@ function initFpvMouseLook() {
     const dy = e.clientY - fpvLookDrag.y;
     fpvLookDrag = { x: e.clientX, y: e.clientY };
     if (!dx && !dy) return;
+    // When a waypoint shot is selected, dragging IS an aim edit — the camera turns AND the
+    // shot's yaw/tilt update live in the aim panel as an unconfirmed draft (Confirm keeps it,
+    // Cancel snaps everything back). With no shot selected it's a pure free-look.
+    const wp = aimCurrentWp();
+    const s = wp && curAimShot(wp);
     // 1:1 "grab the world" feel — degrees per pixel tracks the current FOV, so the
     // look speed automatically slows down when the FPV zoom is punched in.
     const cam = viewer.camera;
     const degPerPx = Cesium.Math.toDegrees(cam.frustum.fov) / Math.max(1, canvas.clientWidth);
     const heading = Cesium.Math.toDegrees(cam.heading) - dx * degPerPx; // drag right → world slides right
-    const pitch = Math.max(-89, Math.min(45,
+    const maxPitch = s ? 30 : 45; // editing: cap at the gimbal's +30° limit so view == shot
+    const pitch = Math.max(-89, Math.min(maxPitch,
       Cesium.Math.toDegrees(cam.pitch) - dy * degPerPx));              // drag up → look up
     cam.setView({
       destination: Cesium.Cartesian3.clone(cam.position),
@@ -196,6 +202,10 @@ function initFpvMouseLook() {
         roll: 0,
       },
     });
+    if (s) {
+      applyAim('yaw', heading, true);  // skipFpv — camera already oriented above
+      applyAim('tilt', pitch, true);
+    }
   });
   const endLook = (e) => {
     if (!fpvLookDrag) return;
@@ -283,14 +293,15 @@ function wireUi() {
   });
 
   // FPV camera-aim editor: ▲▼ steppers, type-to-edit value, and wheel/arrow nudging.
-  // Yaw/tilt act on the currently-selected photo action (shot); alt is per-waypoint.
+  // Yaw/tilt/zoom act on the currently-selected photo action (shot); alt is per-waypoint.
   const curAim = (kind) => {
     const wp = aimCurrentWp(); if (!wp) return null;
     if (kind === 'alt') return wp.aglHeight == null ? null : toDisp(wp.aglHeight); // display unit (m/ft)
     const s = curAimShot(wp); if (!s) return null;
+    if (kind === 'zoom') return s.zoomFocalLength == null ? null : zoomFromFocal(s.zoomFocalLength);
     return kind === 'yaw' ? s.aircraftHeading : s.gimbalPitch;
   };
-  ['yaw', 'tilt', 'alt'].forEach((kind) => {
+  ['yaw', 'tilt', 'zoom', 'alt'].forEach((kind) => {
     const inp = $('aim-' + kind);
     if (!inp) return;
     inp.addEventListener('focus', () => inp.select());
@@ -585,14 +596,21 @@ function enterFpv() {
   applyFpv();
 }
 
+// Capture zoom (focal mm) of the shot the aim editor is on — falls back to the waypoint's
+// first zoom action. Keeps the FPV FOV, green box and readout in step with per-shot edits.
+function activeShotFocal() {
+  const wp = wpByIndex(state.selected);
+  if (!wp) return null;
+  const s = curAimShot(wp);
+  if (s && s.zoomFocalLength != null) return s.zoomFocalLength;
+  return wp.zoomFocalLength;
+}
+
 function setFpvFov() {
   if (!cesiumOK || !state.fpv) return;
   if (fpvZoomMode === 2) {
     let zoom = fpvManualZoom;
-    if (zoom == null) {
-      const src = wpByIndex(state.selected)?.toJSON() || {};
-      zoom = zoomFromFocal(src.zoomFocalLength) || 3;
-    }
+    if (zoom == null) zoom = zoomFromFocal(activeShotFocal()) || 3;
     viewer.camera.frustum.fov = Cesium.Math.toRadians(Math.max(2, WIDE_FOV_DEG / zoom));
   } else {
     viewer.camera.frustum.fov = Cesium.Math.toRadians(WIDE_FOV_DEG);
@@ -603,8 +621,7 @@ function setFpvFov() {
 function fpvAdjustZoom(delta) {
   if (!state.fpv) return;
   if (fpvManualZoom == null) {
-    const src = wpByIndex(state.selected)?.toJSON() || {};
-    fpvManualZoom = zoomFromFocal(src.zoomFocalLength) || 3;
+    fpvManualZoom = zoomFromFocal(activeShotFocal()) || 3;
   }
   // Snap to whole numbers for clean steps; allow fine fractions below 3×
   const raw = fpvManualZoom + delta;
@@ -745,13 +762,15 @@ function refreshAimControls() {
   const s = curAimShot(wp);
   setAimRow('yaw', s ? s.aircraftHeading : wp.aircraftHeading);
   setAimRow('tilt', s ? s.gimbalPitch : wp.gimbalPitch);
+  setAimRow('zoom', s && s.zoomFocalLength != null ? zoomFromFocal(s.zoomFocalLength) : null);
   setAimRow('alt', wp.aglHeight);
   updateAimButtons();
 }
 
-// Preview a yaw / tilt / alt change on the selected shot (not yet committed). Yaw/tilt act on
-// state.aimShot; alt is shared across the waypoint's shots.
-function applyAim(kind, value) {
+// Preview a yaw / tilt / zoom / alt change on the selected shot (not yet committed). Yaw/tilt/zoom
+// act on state.aimShot; alt is shared across the waypoint's shots. skipFpv=true is used by FPV
+// mouse-look, which has already oriented the camera itself and must not have its position snapped.
+function applyAim(kind, value, skipFpv) {
   const wp = aimCurrentWp();
   if (!wp) return;
   const k = state.aimShot;
@@ -761,6 +780,7 @@ function applyAim(kind, value) {
     aimDraft = { wpIndex: wp.index, shot: k,
       origYaw: s ? s.aircraftHeading : wp.aircraftHeading,
       origTilt: s ? s.gimbalPitch : wp.gimbalPitch,
+      origZoom: s ? s.zoomFocalLength : null, // exact focal mm, so Cancel restores 52.8-style natives
       origAlt: wp.aglHeight };
   }
   if (kind === 'yaw') {
@@ -771,14 +791,24 @@ function applyAim(kind, value) {
     if (!s || s.gimbalPitch == null) return; // no gimbalRotate action to edit
     wp.setShotGimbalPitch(k, round1(Math.max(-90, Math.min(30, value))));
     setAimRow('tilt', (wp.photoShots[k] || {}).gimbalPitch);
+  } else if (kind === 'zoom') { // capture zoom factor; 1/3/7 snap to native 24/70/168 mm
+    if (!s || s.zoomFocalLength == null) return; // no zoom action to edit
+    const z = Math.max(1, Math.min(28, value));
+    const focal = Math.abs(z - 1) < 0.05 ? 24 : Math.abs(z - 3) < 0.05 ? 70
+      : Math.abs(z - 7) < 0.05 ? 168 : parseFloat((round1(z) * WIDE_MM).toFixed(1));
+    wp.setShotZoomFocalLength(k, focal);
+    setAimRow('zoom', zoomFromFocal((wp.photoShots[k] || {}).zoomFocalLength));
+    fpvManualZoom = null;   // pressing 2 (or being in zoom view) now shows the edited level
+    setFpvFov();            // live FOV update if the zoom view is active
+    updateFpvOverlay();     // green capture box resizes proportionally in the wide view
   } else { // alt (AGL height) — `value` is in the current display unit (m/ft)
     if (wp.aglHeight == null) return;
     const meters = Math.max(0, Math.min(300, fromDisp(value))); // clamp 0–300 m
     setWpAgl(wp, round2(meters));
     setAimRow('alt', wp.aglHeight);
   }
-  applyFpv();          // re-aim FPV camera + overlay + readouts live (preview)
-  updateAimButtons();  // enable Confirm/Cancel
+  if (!skipFpv) applyFpv(); // re-aim FPV camera + overlay + readouts live (preview)
+  updateAimButtons();       // enable Confirm/Cancel
 }
 
 // Commit the current draft as a recorded (undoable) edit.
@@ -787,9 +817,9 @@ function confirmAim() {
   const wp = wpByIndex(aimDraft.wpIndex);
   if (wp) {
     const s = (wp.photoShots || [])[aimDraft.shot] || {};
-    const before = { yaw: aimDraft.origYaw, tilt: aimDraft.origTilt, alt: aimDraft.origAlt };
-    const after = { yaw: s.aircraftHeading, tilt: s.gimbalPitch, alt: wp.aglHeight };
-    if (before.yaw !== after.yaw || before.tilt !== after.tilt || before.alt !== after.alt) {
+    const before = { yaw: aimDraft.origYaw, tilt: aimDraft.origTilt, zoom: aimDraft.origZoom, alt: aimDraft.origAlt };
+    const after = { yaw: s.aircraftHeading, tilt: s.gimbalPitch, zoom: s.zoomFocalLength, alt: wp.aglHeight };
+    if (before.yaw !== after.yaw || before.tilt !== after.tilt || before.zoom !== after.zoom || before.alt !== after.alt) {
       const wpIndex = wp.index, shot = aimDraft.shot;
       pushHistory({
         label: `aim edit WP ${wpIndex + 1}` + (shot ? ` shot ${shot + 1}` : ''),
@@ -809,11 +839,12 @@ function revertAim() {
   if (wp) {
     if (aimDraft.origYaw != null) wp.setShotAircraftHeading(aimDraft.shot, aimDraft.origYaw);
     if (aimDraft.origTilt != null) wp.setShotGimbalPitch(aimDraft.shot, aimDraft.origTilt);
+    if (aimDraft.origZoom != null) wp.setShotZoomFocalLength(aimDraft.shot, aimDraft.origZoom);
     if (aimDraft.origAlt != null) setWpAgl(wp, aimDraft.origAlt);
   }
   const wasSelected = wp && wp.index === state.selected;
   aimDraft = null;
-  if (state.fpv && wasSelected) applyFpv();
+  if (state.fpv && wasSelected) { fpvManualZoom = null; applyFpv(); updateFpvOverlay(); }
   refreshAimControls();
 }
 
@@ -823,6 +854,7 @@ function applyAimRecord(wpIndex, shot, vals) {
   if (!wp) return;
   if (vals.yaw != null) wp.setShotAircraftHeading(shot, vals.yaw);
   if (vals.tilt != null) wp.setShotGimbalPitch(shot, vals.tilt);
+  if (vals.zoom != null) { wp.setShotZoomFocalLength(shot, vals.zoom); fpvManualZoom = null; }
   if (vals.alt != null) setWpAgl(wp, vals.alt);
   setDirty(true);
   if (state.fpv) selectWaypoint(wpIndex); // jump to the affected waypoint (may reset aimShot)
@@ -1801,12 +1833,11 @@ function updateFpvAltReadout() {
   else if (h != null) el.textContent = toDisp(h).toFixed(1);
   else el.textContent = '—';
 
-  // Capture zoom for the selected waypoint (what the drone shoots at this stop).
+  // Capture zoom of the active shot (what the drone shoots at this stop).
   const zEl = $('fpv-zoom-val');
   if (zEl) {
-    const wp = wpByIndex(state.selected);
-    zEl.textContent = (wp && wp.zoomFocalLength != null)
-      ? zoomLabel(wp.zoomFocalLength).replace('x', '×') : '—';
+    const focal = activeShotFocal();
+    zEl.textContent = focal != null ? zoomLabel(focal).replace('x', '×') : '—';
   }
 }
 
@@ -1861,8 +1892,9 @@ function updateFpvOverlay() {
 
   const src = wp.toJSON();
   const lenses = src.lenses || [];
-  const zoom = zoomFromFocal(src.zoomFocalLength) || 1;
-  const focalMm = src.zoomFocalLength || WIDE_MM;
+  const shotFocal = activeShotFocal(); // green box follows the ACTIVE shot's (possibly edited) zoom
+  const zoom = zoomFromFocal(shotFocal) || 1;
+  const focalMm = shotFocal || WIDE_MM;
   const heading = src.aircraftHeading ?? src.headingAngle ?? bearingToNext(wp) ?? 0;
 
   // --- lens bar ---

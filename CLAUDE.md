@@ -229,13 +229,22 @@ renames) is deliberately NOT in the history. Also fixed in passing: uniquifyWpNa
 nonexistent `renderWaypoints()` → now `renderList()` (was a latent crash after renaming).
 
 **FPV mouse-look:** while FPV is on, the map controller is disabled (`setFpvMouseMode(on)`) and
-dragging on the canvas steers the CAMERA — yaw+tilt, "grab the world" direction (drag right →
-world slides right; drag down → look up), 1:1 feel via degrees-per-pixel = current FOV / canvas
-width (so it slows when zoomed). Pitch clamped [−89°, +45°], roll pinned 0. Wheel = FPV zoom
-(same steps as +/−). Position stays on the keyboard (W/S/A/D/C/Z). Pointer-captured drag
-(`initFpvMouseLook` in app.js, called from initCesium); cursor grab/grabbing. All FPV entry/exit
-paths wired: checkbox onchange, `enterFpv()` (row double-click), Shift+F (dispatches change),
-resetSession. Exiting FPV restores normal map mouse controls.
+dragging on the canvas steers the CAMERA — yaw+tilt; drag right → world slides right; **drag up →
+look up** (inverted per operator preference); 1:1 feel via degrees-per-pixel = current FOV / canvas
+width (so it slows when zoomed). Roll pinned 0. Wheel = FPV zoom (same steps as +/−). Position
+stays on the keyboard (W/S/A/D/C/Z). Pointer-captured drag (`initFpvMouseLook` in app.js, called
+from initCesium); cursor grab/grabbing. All FPV entry/exit paths wired: checkbox onchange,
+`enterFpv()` (row double-click), Shift+F (dispatches change), resetSession. Exiting FPV restores
+normal map mouse controls. **Drag IS an aim edit:** when a shot is selected (aim panel visible),
+dragging previews the shot's yaw/tilt live via `applyAim(kind, value, skipFpv=true)` (camera
+already oriented; no position snap) — Confirm/Cancel/undo apply as with typed edits; pitch capped
+at +30° while editing (gimbal limit; free-look cap +45°). **Zoom row in the aim editor**
+(`#aim-zoom`, factor ×): steppers/typed, snaps 1/3/7 → native 24/70/168 mm, else factor×24 (round1);
+draft stores exact orig focal (restores 52.8-style natives on Cancel); edits go through
+`setShotZoomFocalLength` (pre-position zoom + orientedShoot focal). `activeShotFocal()` feeds
+setFpvFov / updateFpvOverlay / the zoom readout, so the green capture box resizes with the edited
+zoom in wide view (key 1) and key 2 zooms the FPV to the edited level (edits clear fpvManualZoom).
+The hints panel opens ABOVE the ⌨ Controls button (bottom: 46px) so the button doesn't cover it.
 
 **Loaded-files badge:** collapsed `🗂 n/3` pill at the viewer's top-right (`#files-badge`); hovering
 expands it to Route / 3D model / Photos rows (basename shown, full path in tooltip, "—" when not
