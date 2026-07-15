@@ -228,6 +228,15 @@ new-route load and Reset session (entries hold old waypoint refs). `renameMatche
 renames) is deliberately NOT in the history. Also fixed in passing: uniquifyWpNames called a
 nonexistent `renderWaypoints()` → now `renderList()` (was a latent crash after renaming).
 
+**FPV mouse-look:** while FPV is on, the map controller is disabled (`setFpvMouseMode(on)`) and
+dragging on the canvas steers the CAMERA — yaw+tilt, "grab the world" direction (drag right →
+world slides right; drag down → look up), 1:1 feel via degrees-per-pixel = current FOV / canvas
+width (so it slows when zoomed). Pitch clamped [−89°, +45°], roll pinned 0. Wheel = FPV zoom
+(same steps as +/−). Position stays on the keyboard (W/S/A/D/C/Z). Pointer-captured drag
+(`initFpvMouseLook` in app.js, called from initCesium); cursor grab/grabbing. All FPV entry/exit
+paths wired: checkbox onchange, `enterFpv()` (row double-click), Shift+F (dispatches change),
+resetSession. Exiting FPV restores normal map mouse controls.
+
 **Loaded-files badge:** collapsed `🗂 n/3` pill at the viewer's top-right (`#files-badge`); hovering
 expands it to Route / 3D model / Photos rows (basename shown, full path in tooltip, "—" when not
 loaded). Updated by `updateFilesBadge()` from `state.routePath/modelDir/photosDir` — called at boot,

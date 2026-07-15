@@ -147,6 +147,72 @@ function initCesium() {
       selectWaypoint(picked.id.wpIndex);
     }
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+  initFpvMouseLook();
+}
+
+// ---------------------------------------------------------------------------
+// FPV mouse-look — while in FPV the mouse steers the CAMERA (yaw + tilt) by dragging,
+// like grabbing the view in Street View, instead of orbiting/panning the map. Position
+// stays on the keyboard (W/S/A/D move, C/Z up/down). The map controller is disabled for
+// the duration and restored when FPV turns off.
+// ---------------------------------------------------------------------------
+let fpvLookDrag = null; // { x, y } of the last pointer position while steering
+
+function setFpvMouseMode(on) {
+  if (!cesiumOK) return;
+  viewer.scene.screenSpaceCameraController.enableInputs = !on;
+  viewer.scene.canvas.style.cursor = on ? 'grab' : '';
+  if (!on) fpvLookDrag = null;
+}
+
+function initFpvMouseLook() {
+  const canvas = viewer.scene.canvas;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!state.fpv || e.button !== 0) return;
+    fpvLookDrag = { x: e.clientX, y: e.clientY };
+    try { canvas.setPointerCapture(e.pointerId); } catch {}
+    canvas.style.cursor = 'grabbing';
+    e.preventDefault();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!fpvLookDrag || !state.fpv || !cesiumOK) return;
+    const dx = e.clientX - fpvLookDrag.x;
+    const dy = e.clientY - fpvLookDrag.y;
+    fpvLookDrag = { x: e.clientX, y: e.clientY };
+    if (!dx && !dy) return;
+    // 1:1 "grab the world" feel — degrees per pixel tracks the current FOV, so the
+    // look speed automatically slows down when the FPV zoom is punched in.
+    const cam = viewer.camera;
+    const degPerPx = Cesium.Math.toDegrees(cam.frustum.fov) / Math.max(1, canvas.clientWidth);
+    const heading = Cesium.Math.toDegrees(cam.heading) - dx * degPerPx; // drag right → world slides right
+    const pitch = Math.max(-89, Math.min(45,
+      Cesium.Math.toDegrees(cam.pitch) + dy * degPerPx));              // drag down → look up
+    cam.setView({
+      destination: Cesium.Cartesian3.clone(cam.position),
+      orientation: {
+        heading: Cesium.Math.toRadians(heading),
+        pitch: Cesium.Math.toRadians(pitch),
+        roll: 0,
+      },
+    });
+  });
+  const endLook = (e) => {
+    if (!fpvLookDrag) return;
+    fpvLookDrag = null;
+    if (state.fpv) canvas.style.cursor = 'grab';
+    try { canvas.releasePointerCapture(e.pointerId); } catch {}
+  };
+  canvas.addEventListener('pointerup', endLook);
+  canvas.addEventListener('pointercancel', endLook);
+  // Scroll wheel in FPV = camera zoom (same steps as the +/- keys).
+  canvas.addEventListener('wheel', (e) => {
+    if (!state.fpv) return;
+    e.preventDefault();
+    const step = fpvManualZoom != null && fpvManualZoom >= 10 ? 5
+      : fpvManualZoom != null && fpvManualZoom >= 3 ? 1 : 0.5;
+    fpvAdjustZoom(e.deltaY < 0 ? step : -step);
+  }, { passive: false });
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +403,7 @@ function wireUi() {
     $('fpv-alt').classList.toggle('hidden', !state.fpv);
     if (state.fpv) {
       $('fpv-hint').classList.remove('hidden'); // collapsed until expanded via the toggle
+      setFpvMouseMode(true); // mouse = camera aim (drag) + zoom (wheel); map inputs off
       applyFpv(); updateFpvOverlay(); updateFpvAltReadout(); refreshAimControls();
     } else {
       revertAim();
@@ -344,7 +411,8 @@ function wireUi() {
       $('fpv-aim').classList.add('hidden');
       $('fpv-overlay').classList.add('hidden'); // hide the green capture box + lens overlay
       stopFpvLoop(); fpvKeys.clear();
-      if (cesiumOK) { viewer.camera.frustum.fov = Cesium.Math.toRadians(60); viewer.scene.screenSpaceCameraController.enableInputs = true; }
+      setFpvMouseMode(false); // restore normal map mouse controls
+      if (cesiumOK) { viewer.camera.frustum.fov = Cesium.Math.toRadians(60); }
       fitView();
     }
   };
@@ -513,6 +581,7 @@ function enterFpv() {
   $('fpv').checked = true;
   state.fpv = true;
   $('fpv-hint').classList.remove('hidden');
+  setFpvMouseMode(true);
   applyFpv();
 }
 
@@ -972,7 +1041,7 @@ function resetSession() {
     if (state.tileset) { try { viewer.scene.primitives.remove(state.tileset); } catch {} }
     if (state.imageryLayer) { try { viewer.imageryLayers.remove(state.imageryLayer); } catch {} }
     viewer.camera.frustum.fov = Cesium.Math.toRadians(60);
-    viewer.scene.screenSpaceCameraController.enableInputs = true;
+    setFpvMouseMode(false); // restore map mouse controls + cursor
   }
 
   // Clear all session state
