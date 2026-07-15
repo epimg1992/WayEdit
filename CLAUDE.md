@@ -291,13 +291,20 @@ Same design system (amber brand; troubleshooting uses orange eyebrow/nodes). Red
 the scratchpad file and calling Artifact with the matching URL. Each links to the other in its hero.
 
 **Open follow-ups:**
-- **PENDING — RTK offset measurement flight (Midland office):** operator will author a new test
-  route over a better reference point (a first draft, `Testing-offset-check.kmz` in
-  `Downloads/Midland Office/`, was prepared — all shots forced to −90°/wide via the per-shot
-  setters — but is on hold). Plan: fly the same route 3× (LOCAL / POLARIS / DOCK 3 RTK, each
-  RTK-FIXED), then analyze the photo sets — match ground features across sets, pixels→metres via
-  AGL+camera geometry, heading from XMP, vertical via AbsoluteAltitude−LRFTargetDistance — to
-  quantify pairwise E/N/U offsets and save them as Shift-panel presets (`rtkOffsets`).
+- **DONE — RTK offset measurement flights (2026-07-15, 4 sites, `Downloads/RTK Field Test/`):**
+  operator flew a hover test (same 1-WP route per site, −90° wide, 3 shots per source) under
+  LOCAL/POLARIS/DOCK. Analysis (scratchpad rtk_meta.js + rtk_offsets.py + rtk_orb.py): horizontal
+  from ORB+RANSAC scene shift (phase correlation failed on truck-parallax pairs — don't trust it
+  there), scale-corrected by height-above-dirt (deck ≈2.3 m above ground); vertical from
+  absAlt−relAlt (frame altitude of the same physical dock pad) — cross-checked vs LRF ground
+  channel (5 cm agreement); triangle closure 2 cm at Office. **Conversion vectors Δ(A→B), metres
+  E/N/U** (apply to a route authored in A to fly under B): Office D→L (−0.99,−1.57,−1.02),
+  Office L→P (−1.43,+0.49,−1.14), Office D→P (−2.40,−1.10,−2.16); RC D→L (+0.08,−2.84,−0.07),
+  RC L→P (−1.33,+0.45,−1.18), RC D→P (−1.22,−2.38,−1.26); LV D→P (−0.08,−2.70,+1.13);
+  RR L→P (−1.30,+0.55,−1.29). LOCAL→POLARIS is regionally consistent (~ −1.35,+0.50,−1.20) =
+  durable preset. **CAVEAT: the dock is vehicle-mounted — it re-surveys its base each
+  deployment, so DOCK offsets are per-parking/per-survey**; verify on next visit (re-fly the
+  hover test) before trusting a saved DOCK preset across days.
 - **TODO (placemarker, raised by operator):** double-check heights on all waypoints carrying a
   relief-valve or thief-hatch short code — suspected route mixup. Final scope: `TKPRV` (tank P/V
   relief valve), `SEPPRV` (separator PRV popped), `SEPRFV` (separator relief-valve discharge),
