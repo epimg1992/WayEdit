@@ -1039,6 +1039,22 @@ function initShiftPanel() {
     $('shift-preset-name').value = '';
     setStatus(`Saved offset "${name}" — reusable on any route via Apply / Apply ⇄.`);
   };
+  // Save a preset from TYPED E/N/U offsets (e.g. values measured from a photo test flight).
+  // Fields are in the current display unit (m/ft); blank counts as 0.
+  $('shift-save-manual').onclick = () => {
+    const name = $('shift-preset-name').value.trim();
+    if (!name) { setStatus('Type a name first (e.g. "Office LOCAL→DOCK"), then Add.'); return; }
+    const num = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? 0 : fromDisp(v); };
+    const e = num('shift-new-e'), n = num('shift-new-n'), u = num('shift-new-u');
+    if (!e && !n && !u) { setStatus('Enter at least one E / N / U offset value.'); return; }
+    const arr = loadPresets().filter((p) => p.name !== name);
+    arr.push({ name, e: round2(e), n: round2(n), u: round2(u) });
+    storePresets(arr);
+    renderPresets(name);
+    $('shift-preset-name').value = '';
+    ['shift-new-e', 'shift-new-n', 'shift-new-u'].forEach((id) => { $(id).value = ''; });
+    setStatus(`Saved offset "${name}" from typed values.`);
+  };
   $('shift-del-preset').onclick = () => {
     const p = selectedPreset();
     if (!p) { setStatus('Pick a saved offset to delete.'); return; }

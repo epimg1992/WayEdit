@@ -572,3 +572,8 @@ figure.thumb figcaption.cap-edit {
   border-radius: 5px; padding: 4px 8px; font-family: var(--mono); font-size: 11px;
 }
 #shift-preset-name:focus { outline: none; border-color: var(--cyan); }
+.shift-xyz {
+  width: 52px; min-width: 0; background: #0c1118; border: 1px solid var(--line); color: var(--ink);
+  border-radius: 5px; padding: 4px 6px; font-family: var(--mono); font-size: 11px;
+}
+.shift-xyz:focus { outline: none; border-color: var(--cyan); }
