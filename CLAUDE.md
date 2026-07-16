@@ -303,6 +303,20 @@ deleted as used — recreate as needed.)
 Same design system (amber brand; troubleshooting uses orange eyebrow/nodes). Redeploy by editing
 the scratchpad file and calling Artifact with the matching URL. Each links to the other in its hero.
 
+**⚠ CURRENT SESSION STATE (2026-07-15) — read first:**
+- **DO NOT commit/push to GitHub or create PRs until the operator explicitly says so.** Work
+  locally (edit, rebuild, test), leave the working tree for them to review. Repo was clean/pushed
+  through commit `825c209` (add-actions first cut); this CLAUDE.md edit is the only local change.
+- **Add-actions is UNTESTED in FH2** — the operator is about to test the 4 kinds (Fixed Photo /
+  Pano / ● Rec / ■ Stop, plus F in FPV). Expect fixes; actions work continues before any other
+  features ("the app needs to be worked on the actions before getting more updates").
+- **UNFIXED UI BUG (reported, not yet addressed):** the FPV alt/zoom readout (`#fpv-alt`, shows
+  "1× / 16.3 m AGL") overlaps the shift panel's Apply / Apply ⇄ / ✕ buttons when both are open —
+  it sits bottom-right but the SAVED RTK OFFSETS section made the shift panel taller. Move/shift
+  one of them (e.g. shift panel further down, or fpv-alt aside) so RTK re-base stays clickable.
+- Reports (artifact URLs below) + RTK findings PDF (`Downloads/RTK-field-test-findings.pdf`) are
+  current through the RTK field test + 112× zoom.
+
 **Open follow-ups:**
 - **DONE — RTK offset measurement flights (2026-07-15, 4 sites, `Downloads/RTK Field Test/`):**
   operator flew a hover test (same 1-WP route per site, −90° wide, 3 shots per source) under
