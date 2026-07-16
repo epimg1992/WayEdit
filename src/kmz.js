@@ -61,6 +61,84 @@ function descendants(node, tagName) {
   return Array.prototype.slice.call(list);
 }
 
+// UUID v4 for new orientedShoot/panoShot actions (uses the platform crypto when available).
+function uuidv4() {
+  const g = (typeof globalThis !== 'undefined' && globalThis.crypto) ? globalThis.crypto : null;
+  if (g && typeof g.randomUUID === 'function') return g.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+// Build the <wpml:action> XML string(s) for a new action/block, matching FlightHub's format.
+// `ctx` = { kind, heading, pitch, focal, lens, useGlobalLens, isWl }; `nextId()` yields ids.
+function actionBlockXml(ctx, nextId) {
+  const { kind, heading, pitch, focal, lens, useGlobalLens, shared, isWl } = ctx;
+  const A = (func, params) =>
+    '<wpml:action xmlns:wpml="http://www.dji.com/wpmz/1.0.6">'
+    + `<wpml:actionId>${nextId()}</wpml:actionId>`
+    + `<wpml:actionActuatorFunc>${func}</wpml:actionActuatorFunc>`
+    + `<wpml:actionActuatorFuncParam>${params}</wpml:actionActuatorFuncParam></wpml:action>`;
+  const rotateYaw = () => A('rotateYaw',
+    `<wpml:aircraftHeading>${heading}</wpml:aircraftHeading>`
+    + '<wpml:aircraftPathMode>counterClockwise</wpml:aircraftPathMode>');
+  const gimbalRotate = () => A('gimbalRotate',
+    '<wpml:gimbalHeadingYawBase>north</wpml:gimbalHeadingYawBase>'
+    + '<wpml:gimbalRotateMode>absoluteAngle</wpml:gimbalRotateMode>'
+    + '<wpml:gimbalPitchRotateEnable>1</wpml:gimbalPitchRotateEnable>'
+    + `<wpml:gimbalPitchRotateAngle>${pitch}</wpml:gimbalPitchRotateAngle>`
+    + '<wpml:gimbalRollRotateEnable>0</wpml:gimbalRollRotateEnable>'
+    + '<wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>'
+    + '<wpml:gimbalYawRotateEnable>0</wpml:gimbalYawRotateEnable>'
+    + '<wpml:gimbalYawRotateAngle>0</wpml:gimbalYawRotateAngle>'
+    + '<wpml:gimbalRotateTimeEnable>0</wpml:gimbalRotateTimeEnable>'
+    + '<wpml:gimbalRotateTime>0</wpml:gimbalRotateTime>'
+    + '<wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>');
+  const zoom = () => A('zoom',
+    `<wpml:focalLength>${focal}</wpml:focalLength>`
+    + '<wpml:isUseFocalFactor>0</wpml:isUseFocalFactor>'
+    + '<wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>');
+  const orientedShoot = () => {
+    const lensLine = isWl ? `<wpml:payloadLensIndex>${lens}</wpml:payloadLensIndex>` : '';
+    return A('orientedShoot',
+      `<wpml:gimbalPitchRotateAngle>${pitch}</wpml:gimbalPitchRotateAngle>`
+      + '<wpml:gimbalRollRotateAngle>0</wpml:gimbalRollRotateAngle>'
+      + `<wpml:gimbalYawRotateAngle>${heading}</wpml:gimbalYawRotateAngle>`
+      + '<wpml:focusX>0</wpml:focusX><wpml:focusY>0</wpml:focusY>'
+      + '<wpml:focusRegionWidth>0</wpml:focusRegionWidth><wpml:focusRegionHeight>0</wpml:focusRegionHeight>'
+      + `<wpml:focalLength>${focal}</wpml:focalLength>`
+      + `<wpml:aircraftHeading>${heading}</wpml:aircraftHeading>`
+      + '<wpml:accurateFrameValid>0</wpml:accurateFrameValid>'
+      + '<wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>'
+      + `<wpml:useGlobalPayloadLensIndex>${useGlobalLens}</wpml:useGlobalPayloadLensIndex>`
+      + lensLine
+      + '<wpml:targetAngle>0</wpml:targetAngle>'
+      + `<wpml:actionUUID>${shared.uuid}</wpml:actionUUID>`
+      + '<wpml:imageWidth>0</wpml:imageWidth><wpml:imageHeight>0</wpml:imageHeight>'
+      + '<wpml:AFPos>0</wpml:AFPos><wpml:gimbalPort>0</wpml:gimbalPort>'
+      + '<wpml:orientedCameraType>99</wpml:orientedCameraType>'
+      + `<wpml:orientedFilePath>${shared.file}</wpml:orientedFilePath>`
+      + '<wpml:orientedFileMD5/><wpml:orientedFileSize>0</wpml:orientedFileSize>'
+      + '<wpml:orientedPhotoMode>normalPhoto</wpml:orientedPhotoMode>');
+  };
+  if (kind === 'takePhotoFixed') return [rotateYaw(), gimbalRotate(), zoom(), orientedShoot()];
+  if (kind === 'pano') return [A('panoShot',
+    '<wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>'
+    + '<wpml:useGlobalPayloadLensIndex>0</wpml:useGlobalPayloadLensIndex>'
+    + '<wpml:payloadLensIndex>wide</wpml:payloadLensIndex>'
+    + `<wpml:actionUUID>${shared.uuid}</wpml:actionUUID>`
+    + '<wpml:panoShotSubMode>panoShot_360</wpml:panoShotSubMode>')];
+  if (kind === 'startRecord') {
+    const lensLine = isWl ? `<wpml:payloadLensIndex>${lens}</wpml:payloadLensIndex>` : '';
+    return [A('startRecord',
+      '<wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>'
+      + `<wpml:useGlobalPayloadLensIndex>${useGlobalLens}</wpml:useGlobalPayloadLensIndex>` + lensLine)];
+  }
+  if (kind === 'stopRecord') return [A('stopRecord', '<wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>')];
+  return [];
+}
+
 // ---------------------------------------------------------------------------
 // Mission model
 // ---------------------------------------------------------------------------
@@ -592,6 +670,78 @@ class Waypoint {
     };
     apply(this.mission.waylinesDoc, this.wlNode);
     apply(this.mission.templateDoc, this.tplNode);
+  }
+
+  // --- add actions ---------------------------------------------------------
+  // Insert a new action (or capture block) into this waypoint's reachPoint action group, in BOTH
+  // docs, with fresh sequential actionIds. Serialization matches what FlightHub emits (verified
+  // against the APP INFO.kmz specimen — see WPML action catalog in CLAUDE.md), including the quirk
+  // that orientedShoot/startRecord carry payloadLensIndex in waylines but not template.
+  // kinds: 'takePhotoFixed' (rotateYaw+gimbalRotate+zoom+orientedShoot), 'pano', 'startRecord',
+  // 'stopRecord'. Returns { undo, redo } that remove/re-append the created nodes (for history).
+  addAction(kind, opts = {}) {
+    const shared = { uuid: uuidv4(), file: uuidv4() }; // orientedShoot/panoShot GUIDs — same in both docs
+    const heightless = { kind, shared,
+      heading: opts.heading != null ? opts.heading : (this.aircraftHeading != null ? this.aircraftHeading : 0),
+      pitch: opts.pitch != null ? opts.pitch : (this.gimbalPitch != null ? this.gimbalPitch : -90),
+      focal: opts.focal != null ? opts.focal : (this.zoomFocalLength != null ? this.zoomFocalLength : 24),
+      lens: opts.lens || 'visable,ir',
+      useGlobalLens: opts.useGlobalLens != null ? opts.useGlobalLens : 1,
+    };
+    const created = [];
+    const buildInto = (doc, node, isWl) => {
+      if (!node) return;
+      const group = this._reachPointGroup(doc, node);
+      if (!group) return;
+      const acts = group.getElementsByTagName('wpml:action');
+      let nextId = 0;
+      for (let i = 0; i < acts.length; i++) {
+        const v = parseInt(childText(acts[i], 'wpml:actionId'), 10);
+        if (!isNaN(v) && v >= nextId) nextId = v + 1;
+      }
+      const xmls = actionBlockXml({ ...heightless, isWl }, () => nextId++);
+      for (const xml of xmls) {
+        let el = new DOMParser().parseFromString(xml, 'text/xml').documentElement;
+        el.removeAttribute('xmlns:wpml'); // parent doc already declares it — avoid redundant decls
+        if (doc.importNode) el = doc.importNode(el, true);
+        group.appendChild(el);
+        created.push({ parent: group, el });
+      }
+    };
+    buildInto(this.mission.waylinesDoc, this.wlNode, true);
+    buildInto(this.mission.templateDoc, this.tplNode, false);
+    return {
+      undo: () => created.forEach((c) => { if (c.el.parentNode) c.parent.removeChild(c.el); }),
+      redo: () => created.forEach((c) => { if (!c.el.parentNode) c.parent.appendChild(c.el); }),
+    };
+  }
+
+  // Find (or create) the reachPoint action group in a placemark node.
+  _reachPointGroup(doc, node) {
+    const groups = node.getElementsByTagName('wpml:actionGroup');
+    for (let i = 0; i < groups.length; i++) {
+      const t = groups[i].getElementsByTagName('wpml:actionTriggerType')[0];
+      if (t && t.textContent.trim() === 'reachPoint') return groups[i];
+    }
+    // None present — create a minimal one scoped to this waypoint.
+    const idx = childText(node, 'wpml:index') || '0';
+    let gid = 0;
+    for (let i = 0; i < groups.length; i++) {
+      const v = parseInt(childText(groups[i], 'wpml:actionGroupId'), 10);
+      if (!isNaN(v) && v >= gid) gid = v + 1;
+    }
+    const xml = '<wpml:actionGroup xmlns:wpml="http://www.dji.com/wpmz/1.0.6">'
+      + `<wpml:actionGroupId>${gid}</wpml:actionGroupId>`
+      + `<wpml:actionGroupStartIndex>${idx}</wpml:actionGroupStartIndex>`
+      + `<wpml:actionGroupEndIndex>${idx}</wpml:actionGroupEndIndex>`
+      + '<wpml:actionGroupMode>sequence</wpml:actionGroupMode>'
+      + '<wpml:actionTrigger><wpml:actionTriggerType>reachPoint</wpml:actionTriggerType></wpml:actionTrigger>'
+      + '</wpml:actionGroup>';
+    let el = new DOMParser().parseFromString(xml, 'text/xml').documentElement;
+    el.removeAttribute('xmlns:wpml');
+    if (doc.importNode) el = doc.importNode(el, true);
+    node.appendChild(el);
+    return el;
   }
 
   // Number of images this waypoint is expected to produce — the sum, over every

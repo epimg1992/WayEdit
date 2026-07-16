@@ -276,7 +276,20 @@ they're a SEPARATE `actionGroup` with `actionTrigger` `multipleTiming`(param=sec
 `multipleDistance`(param=metres) containing `takePhoto`; "End Interval Shot" just sets that
 group's actionGroupEndIndex (start/end WP indexes scope it). Only one interval group survived in
 the reference (timed superseded distance). actionIds are sequential within a group — inserting
-actions means renumbering + writing BOTH docs. Planned future feature: add actions in-app.
+actions means renumbering + writing BOTH docs.
+
+**Add actions in-app (IMPLEMENTED, first cut — 4 kinds):** `Waypoint.addAction(kind, opts)` inserts
+into the reachPoint action group of BOTH docs with fresh sequential actionIds (max+1), returns
+`{undo, redo}` (remove/re-append created nodes) for the global history. Module helpers `uuidv4()`
+(new actionUUID/orientedFilePath GUIDs — same in both docs) and `actionBlockXml(ctx, nextId)` build
+FH2-faithful XML incl. the template-omits / waylines-includes `payloadLensIndex` quirk on
+orientedShoot+startRecord. Kinds: `takePhotoFixed` (rotateYaw+gimbalRotate+zoom+orientedShoot block,
+aim/focal baked), `pano` (panoShot_360), `startRecord`, `stopRecord`. `_reachPointGroup` finds or
+creates the group (bare-WP create path untested). UI: **Photo actions** panel has an ADD bar
+(Fixed Photo / Pano / ● Rec / ■ Stop); **F in FPV** adds a fixed-angle photo at the current camera
+aim+zoom (`addWpAction` in app.js). Verified round-trip + undo on APP INFO and Lavaca v2. NOT yet:
+interval-shot groups, delete/reorder actions, per-action editing beyond aim/zoom. Test in FH2
+before trusting on a flown route.
 
 **Helper scripts in `scripts/`** (kept): `route-variant.js` (height/zoom/tilt variants,
 auto/fixed tilt model), `raise-heights.js`. (One-off diag/edit scripts were created and

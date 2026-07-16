@@ -184,7 +184,7 @@
       <div id="fpv-hint" class="fpv-keys hidden collapsed">
         <div><span>Drag</span> Aim camera (yaw + tilt) &nbsp; <span>Wheel</span> Zoom</div>
         <div><span>W/S</span> Forward · Back &nbsp; <span>A/D</span> Strafe &nbsp; <span>Q/E</span> Yaw</div>
-        <div><span>C</span> Ascend &nbsp; <span>Z</span> Descend &nbsp; <span>V</span> Snap to waypoint</div>
+        <div><span>C</span> Ascend &nbsp; <span>Z</span> Descend &nbsp; <span>V</span> Snap to waypoint &nbsp; <span>F</span> Take photo (this aim)</div>
         <div><span>1</span> Wide &nbsp; <span>2</span> Zoom &nbsp; <span>+/−</span> Adjust zoom &nbsp; <span>X</span> Speed: <span id="fpv-speed-label" class="fpv-speed-badge">Slow</span></div>
       </div>
 
@@ -251,7 +251,16 @@
     <section class="rail right" id="rail-right">
       <div class="rail-section" id="sec-actions">
         <div class="rail-head section-toggle" title="Click to collapse / expand"><h2>Photo actions</h2><span id="wp-act-count" class="count">—</span></div>
-        <div id="wp-actions" class="wp-actions sec-body"></div>
+        <div class="sec-body add-action-body">
+          <div class="add-action-bar">
+            <span class="add-action-lbl">ADD</span>
+            <button class="add-act-btn" data-add="takePhotoFixed" title="Take Photo (Fixed Angle) — captures at the current camera aim. Shortcut: F in camera view">📷 Fixed&nbsp;Photo</button>
+            <button class="add-act-btn" data-add="pano" title="Add a 360° panorama shot">Pano</button>
+            <button class="add-act-btn" data-add="startRecord" title="Start video recording at this waypoint">● Rec</button>
+            <button class="add-act-btn" data-add="stopRecord" title="Stop video recording at this waypoint">■ Stop</button>
+          </div>
+          <div id="wp-actions" class="wp-actions"></div>
+        </div>
       </div>
 
       <div class="rail-section" id="sec-info">

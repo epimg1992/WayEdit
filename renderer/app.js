@@ -275,6 +275,11 @@ function wireUi() {
   initShiftPanel();
   updateFilesBadge();
 
+  // Add-action bar (Photo actions panel): insert a new action onto the selected waypoint.
+  document.querySelectorAll('.add-act-btn').forEach((btn) => {
+    btn.onclick = () => addWpAction(btn.dataset.add);
+  });
+
   // Global undo/redo: top-bar buttons + Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z also redoes).
   // Skipped while typing in a text field so native text-editing undo still works there.
   $('btn-undo').onclick = undoAim;
@@ -532,6 +537,7 @@ function wireUi() {
         if (k === '2') { fpvZoomMode = 2; fpvManualZoom = null; setFpvFov(); return; }
         if (k === 'x') { fpvSpeedMode = (fpvSpeedMode + 1) % FPV_SPEEDS.length; updateFpvSpeedLabel(); return; }
         if (k === 'v') { applyFpv(); return; }
+        if (k === 'f') { addWpAction('takePhotoFixed'); return; } // capture at current camera aim
       }
       // Zoom adjust with + / - (allow repeat for smooth ramp)
       if (e.key === '+' || e.key === '=') { fpvAdjustZoom(fpvManualZoom != null && fpvManualZoom >= 10 ? 5 : fpvManualZoom != null && fpvManualZoom >= 3 ? 1 : 0.5); return; }
@@ -1464,6 +1470,34 @@ function renderWpActions(wp) {
       renderWpActions(aimCurrentWp()); // refresh the active-row highlight
     });
   }
+}
+
+// Add a new action to the selected waypoint (Photo actions bar + F key in FPV). For a
+// fixed-angle photo in the camera view, the current FPV camera aim + zoom are baked in.
+function addWpAction(kind) {
+  const wp = wpByIndex(state.selected);
+  if (!wp) { setStatus('Select a waypoint first.'); return; }
+  const opts = {};
+  if (kind === 'takePhotoFixed' && state.fpv && cesiumOK) {
+    opts.heading = round1(wrap180(Cesium.Math.toDegrees(viewer.camera.heading)));
+    opts.pitch = round1(Math.max(-90, Math.min(30, Cesium.Math.toDegrees(viewer.camera.pitch))));
+    const f = activeShotFocal(); if (f != null) opts.focal = f;
+  }
+  const rec = wp.addAction(kind, opts);
+  const refresh = () => {
+    setDirty(true);
+    renderWpActions(wpByIndex(state.selected));
+    if (cesiumOK) { drawWaypoints(); if (state.fpv) { updateFpvOverlay(); refreshAimControls(); } }
+  };
+  refresh();
+  const labels = { takePhotoFixed: 'fixed-angle photo', pano: 'pano', startRecord: 'start recording', stopRecord: 'stop recording' };
+  const label = labels[kind] || 'action';
+  pushHistory({
+    label: `add ${label} · WP ${wp.index + 1}`,
+    undo: () => { rec.undo(); refresh(); },
+    redo: () => { rec.redo(); refresh(); },
+  });
+  setStatus(`Added ${label} to WP ${wp.index + 1} — Export KMZ to save.`);
 }
 
 function renderImageInfo(photo) {

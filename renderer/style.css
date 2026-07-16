@@ -579,3 +579,18 @@ figure.thumb figcaption.cap-edit {
   border-radius: 5px; padding: 4px 6px; font-family: var(--mono); font-size: 11px;
 }
 .shift-xyz:focus { outline: none; border-color: var(--cyan); }
+
+/* ---- add-action bar (Photo actions panel) ---- */
+.add-action-body { display: flex; flex-direction: column; min-height: 0; }
+.add-action-bar {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  padding: 6px 10px; border-bottom: 1px solid var(--line);
+}
+.add-action-lbl { font-family: var(--mono); font-size: 9px; letter-spacing: 1px; color: var(--ink-dim); margin-right: 2px; }
+.add-act-btn {
+  font-family: var(--mono); font-size: 10px; padding: 3px 7px; cursor: pointer;
+  background: #10161f; color: var(--ink-dim); border: 1px solid var(--line); border-radius: 5px;
+  white-space: nowrap;
+}
+.add-act-btn:hover { color: var(--ink); border-color: var(--cyan); }
+.add-act-btn:active { background: #16202c; }
