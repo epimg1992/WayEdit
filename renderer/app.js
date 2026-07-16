@@ -737,6 +737,7 @@ function selectAimShot(k) {
   if (aimDraft) revertAim();
   state.aimShot = k;
   refreshAimControls();
+  renderWpActions(aimCurrentWp()); // keep the Photo actions panel's highlighted row in sync
   if (state.fpv) applyFpv(); // re-aim the preview camera to the chosen shot
 }
 
@@ -745,7 +746,16 @@ function renderAimShots(shots) {
   const el = $('aim-shots'); if (!el) return;
   if (!shots || shots.length <= 1) { el.classList.add('hidden'); el.innerHTML = ''; return; }
   el.classList.remove('hidden');
-  const bandCls = (s) => s.lenses.includes('ir') ? 'band-ir' : s.lenses.includes('zoom') ? 'band-zoom' : 'band-wide';
+  // Follow Route shots already resolve to their actual lens set here (waylines carries a
+  // snapshot of the route default), so this reflects the real camera used either way — no
+  // separate "follow route" color.
+  const bandCls = (s) => {
+    const wide = s.lenses.includes('wide'), ir = s.lenses.includes('ir');
+    if (wide && ir) return 'band-both';
+    if (ir) return 'band-ir';
+    if (s.lenses.includes('zoom')) return 'band-zoom';
+    return 'band-wide';
+  };
   el.innerHTML = '<span class="aim-shots-lbl">SHOT</span>' + shots.map((s) => {
     const active = s.index === state.aimShot ? ' active' : '';
     const tip = (s.name || 'shot ' + (s.index + 1)).replace(/"/g, '');
@@ -1549,10 +1559,7 @@ function renderWpActions(wp) {
       // don't gate on the `multi` closure var, it's stale after the first wiring (this listener
       // is attached once, but re-renders for different waypoints happen on every selection).
       const row = e.target.closest('.wp-act-pick');
-      if (row) {
-        selectAimShot(parseInt(row.dataset.shot, 10));
-        renderWpActions(aimCurrentWp()); // refresh the active-row highlight
-      }
+      if (row) selectAimShot(parseInt(row.dataset.shot, 10)); // re-renders this panel itself
     });
     el.addEventListener('keydown', (e) => {
       const input = e.target.closest('.wp-act-name-input'); if (!input) return;

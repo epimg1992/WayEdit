@@ -390,9 +390,11 @@ td.ph { color: var(--cyan); text-align: right; }
 .fpv-aim .aim-shot.band-wide.active { background: var(--cyan); border-color: var(--cyan); }
 .fpv-aim .aim-shot.band-ir.active { background: var(--ir); border-color: var(--ir); }
 .fpv-aim .aim-shot.band-zoom.active { background: var(--violet); border-color: var(--violet); }
+.fpv-aim .aim-shot.band-both.active { background: linear-gradient(90deg, var(--cyan) 50%, var(--ir) 50%); border-color: var(--ir); }
 .fpv-aim .aim-shot.band-wide { border-bottom-color: var(--cyan); }
 .fpv-aim .aim-shot.band-ir { border-bottom-color: var(--ir); }
 .fpv-aim .aim-shot.band-zoom { border-bottom-color: var(--violet); }
+.fpv-aim .aim-shot.band-both { border-bottom: 2px solid; border-bottom-color: var(--cyan); box-shadow: inset -3px 0 0 var(--ir); }
 /* clickable photo-action rows on multi-shot waypoints */
 .wp-act.wp-act-pick { cursor: pointer; border-radius: 6px; padding: 4px 6px; margin: 0 -6px; }
 .wp-act.wp-act-pick:hover { background: #161e29; }
