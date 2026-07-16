@@ -5,14 +5,15 @@ unsigned `.dmg` + `.zip` (no Apple Developer account needed).
 
 ## 1. Get the project onto the Mac
 
-Copy the whole `wayedit` folder **except** these (they're Windows-only or regenerated):
+The app lives on GitHub — clone it (always gets the latest version):
 
-- `node_modules/` (Windows binaries — `npm install` on the Mac fetches macOS ones)
-- `dist-build/` (old build output)
-- `renderer/vendor/` (Cesium — re-vendored by `npm install`)
+```bash
+git clone https://github.com/epimg1992/WayEdit.git
+cd WayEdit
+```
 
-A ready-made source zip with those excluded can be built with:
-`git archive` (if this ever becomes a repo) or just zip the folder minus those dirs.
+(The repo is private — sign in when prompted, or use `gh auth login` first.
+To update an existing clone later: `git pull`.)
 
 ## 2. Install Node 18+ on the Mac
 
@@ -21,7 +22,7 @@ From https://nodejs.org (LTS). Verify: `node -v`.
 ## 3. Build
 
 ```bash
-cd wayedit
+cd WayEdit
 chmod +x build-mac.sh
 ./build-mac.sh
 ```

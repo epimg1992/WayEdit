@@ -225,7 +225,8 @@ function initFpvMouseLook() {
     const s = wp && curAimShot(wp);
     if (s && s.zoomFocalLength != null) {
       const cur = zoomFromFocal(s.zoomFocalLength) || 1;
-      const step = cur >= 10 ? 5 : cur >= 3 ? 1 : 0.5;
+      // step ladder matches FH2's zoom scale up to 112×
+      const step = cur >= 28 ? 14 : cur >= 10 ? 5 : cur >= 3 ? 1 : 0.5;
       applyAim('zoom', cur + (e.deltaY < 0 ? step : -step), true); // skipFpv: don't snap position
     } else {
       const step = fpvManualZoom != null && fpvManualZoom >= 10 ? 5
@@ -803,7 +804,7 @@ function applyAim(kind, value, skipFpv) {
     setAimRow('tilt', (wp.photoShots[k] || {}).gimbalPitch);
   } else if (kind === 'zoom') { // capture zoom factor; 1/3/7 snap to native 24/70/168 mm
     if (!s || s.zoomFocalLength == null) return; // no zoom action to edit
-    const z = Math.max(1, Math.min(28, value));
+    const z = Math.max(1, Math.min(112, value)); // FH2's hybrid-zoom ceiling is 112×
     const focal = Math.abs(z - 1) < 0.05 ? 24 : Math.abs(z - 3) < 0.05 ? 70
       : Math.abs(z - 7) < 0.05 ? 168 : parseFloat((round1(z) * WIDE_MM).toFixed(1));
     wp.setShotZoomFocalLength(k, focal);
