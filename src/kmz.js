@@ -55,6 +55,13 @@ function setChildText(doc, node, tagName, value) {
   return el;
 }
 
+// Remove a direct child if present (no-op otherwise) — used when a field must be ABSENT
+// (e.g. template.kml omits payloadLensIndex on a "follow route" shot).
+function removeChild(node, tagName) {
+  const el = firstChildEl(node, tagName);
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
 function descendants(node, tagName) {
   // getElementsByTagName matches qualified names in @xmldom/xmldom.
   const list = node.getElementsByTagName(tagName);
@@ -70,6 +77,14 @@ function uuidv4() {
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   });
 }
+
+// Normalize a raw WPML lens token ("visable"(sic)/"ir"/"zoom"/...) to wide/ir/zoom for display.
+function normLens(l) {
+  const x = l.toLowerCase();
+  return (x.includes('ir') || x.includes('therm')) ? 'ir' : x.includes('zoom') ? 'zoom' : 'wide';
+}
+// Reverse of normLens — the raw WPML token FlightHub writes for a given normalized lens.
+function rawLensToken(n) { return n === 'wide' ? 'visable' : n === 'ir' ? 'ir' : n === 'zoom' ? 'zoom' : n; }
 
 // Build the <wpml:action> XML string(s) for a new action/block, matching FlightHub's format.
 // `ctx` = { kind, heading, pitch, focal, lens, useGlobalLens, isWl }; `nextId()` yields ids.
@@ -195,6 +210,21 @@ class Mission {
         const parts = ref.split(',').map((s) => parseFloat(s));
         if (parts.length === 3 && !isNaN(parts[2])) out.takeOffRefAltitude = parts[2];
       }
+      // Raw aircraft/payload identity codes (DJI's WPML enum — see
+      // https://developer.dji.com/doc/cloud-api-tutorial/en/api-reference/dji-wpml/common-element.html).
+      // Not all real-world values are in DJI's published table (e.g. the M4 series isn't, as of
+      // this writing) — kmz.js exposes the raw codes only; friendly labeling/capability
+      // inference is a UI concern, not an engine one, since it can be wrong/incomplete.
+      const drone = firstChildEl(cfg, 'wpml:droneInfo');
+      if (drone) {
+        out.droneEnumValue = childText(drone, 'wpml:droneEnumValue');
+        out.droneSubEnumValue = childText(drone, 'wpml:droneSubEnumValue');
+      }
+      const payload = firstChildEl(cfg, 'wpml:payloadInfo');
+      if (payload) {
+        out.payloadEnumValue = childText(payload, 'wpml:payloadEnumValue');
+        out.payloadSubEnumValue = childText(payload, 'wpml:payloadSubEnumValue');
+      }
     }
     const folder = descendants(doc, 'Folder')[0];
     if (folder) {
@@ -207,6 +237,32 @@ class Mission {
       }
     }
     return out;
+  }
+
+  // Route-wide default Visible/IR/zoom lens set — Folder > wpml:payloadParam > wpml:imageFormat in
+  // template.kml (waylines.wpml has no payloadParam). This is what a shot with
+  // useGlobalPayloadLensIndex=1 ("Follow Route") actually resolves to. Verified against a real
+  // FlightHub-exported KMZ (Camera Settings panel maps 1:1 to this field).
+  get globalLenses() {
+    const doc = this.templateDoc;
+    const folder = doc && descendants(doc, 'Folder')[0];
+    const pp = folder && firstChildEl(folder, 'wpml:payloadParam');
+    const raw = pp && childText(pp, 'wpml:imageFormat');
+    return raw ? raw.split(',').map((s) => s.trim()).filter(Boolean).map(normLens) : [];
+  }
+  set globalLenses(list) {
+    const doc = this.templateDoc;
+    const folder = doc && descendants(doc, 'Folder')[0];
+    if (!folder) return;
+    let pp = firstChildEl(folder, 'wpml:payloadParam');
+    if (!pp) { pp = doc.createElement('wpml:payloadParam'); folder.appendChild(pp); }
+    setChildText(doc, pp, 'wpml:imageFormat', list.map(rawLensToken).join(','));
+    // Keep every "follow route" shot's waylines snapshot in sync with the new default.
+    for (const wp of this.waypoints) {
+      wp.photoShots.forEach((s, k) => {
+        if (s.followRoute) wp.setShotLenses(k, { followRoute: true, lenses: list });
+      });
+    }
   }
 
   /**
@@ -262,6 +318,120 @@ class Mission {
       setChildText(doc, cfg, 'wpml:takeOffRefPoint',
         nLat.toFixed(9) + ',' + nLng.toFixed(9) + ',' + parseFloat((p[2] + dU).toFixed(4)));
     }
+  }
+
+  /**
+   * Insert a brand-new waypoint immediately after `afterIndex`, at a NEW position/height, carrying
+   * exactly one photo action. Used when the FPV camera has been moved (W/S/A/D/C/Z) away from the
+   * reference waypoint before adding a fixed-angle photo — flying to the OLD waypoint and shooting
+   * from the NEW vantage would be wrong, so the shot needs its own stop.
+   *
+   * The new waypoint clones the reference waypoint's Placemark (inheriting speed/turn-mode/
+   * heading-mode/etc. verbatim), then overwrites position/height, strips the inherited action
+   * groups, and adds one fresh photo action via the same path `Waypoint.addAction` uses.
+   *
+   * `pos` = { coordinates: {lng, lat}, absHeight } (absolute WGS84 ellipsoid height, the same frame
+   * `Waypoint.height`/executeHeight/ellipsoidHeight use). `actionOpts` is passed straight through to
+   * `addAction('takePhotoFixed', actionOpts)` (heading/pitch/focal/lens/useGlobalLens/name).
+   *
+   * Returns { waypoint, undo, redo }, same shape as addAction's undo/redo so it slots into the
+   * existing global history stack unchanged.
+   */
+  insertWaypointAfter(afterIndex, pos, actionOpts = {}) {
+    const ref = this.waypoints.find((w) => w.index === afterIndex);
+    if (!ref) throw new Error(`No waypoint at index ${afterIndex}`);
+    const newIndex = afterIndex + 1;
+    const refAlt = this.globals().takeOffRefAltitude;
+    const { lng, lat } = pos.coordinates;
+    const absHeight = pos.absHeight;
+
+    // Everything with index > afterIndex shifts by exactly one slot — capture the actual DOM nodes
+    // now (not Waypoint wrappers, which get rebuilt below) so undo/redo can shift them straight back.
+    const affected = this.waypoints
+      .filter((w) => w.index > afterIndex)
+      .map((w) => ({ tpl: w.tplNode, wl: w.wlNode }));
+
+    const bumpIndex = (node, doc, delta) => {
+      if (!node) return;
+      const cur = parseInt(childText(node, 'wpml:index'), 10);
+      if (!isNaN(cur)) setChildText(doc, node, 'wpml:index', cur + delta);
+      for (const g of descendants(node, 'wpml:actionGroup')) {
+        const s = parseInt(childText(g, 'wpml:actionGroupStartIndex'), 10);
+        const e = parseInt(childText(g, 'wpml:actionGroupEndIndex'), 10);
+        if (!isNaN(s)) setChildText(doc, g, 'wpml:actionGroupStartIndex', s + delta);
+        if (!isNaN(e)) setChildText(doc, g, 'wpml:actionGroupEndIndex', e + delta);
+      }
+    };
+    const shiftAffected = (delta) => {
+      for (const a of affected) {
+        bumpIndex(a.tpl, this.templateDoc, delta);
+        bumpIndex(a.wl, this.waylinesDoc, delta);
+      }
+    };
+
+    const buildClone = (node) => {
+      if (!node) return null;
+      const clone = node.cloneNode(true);
+      for (const g of descendants(clone, 'wpml:actionGroup')) {
+        if (g.parentNode) g.parentNode.removeChild(g);
+      }
+      return clone;
+    };
+    const clonedTpl = buildClone(ref.tplNode);
+    const clonedWl = buildClone(ref.wlNode);
+
+    // Position + height on the clones.
+    const setCoords = (doc, node) => {
+      if (!node) return;
+      const pt = firstChildEl(node, 'Point');
+      if (pt) setChildText(doc, pt, 'coordinates', lng.toFixed(9) + ',' + lat.toFixed(9));
+    };
+    setCoords(this.templateDoc, clonedTpl);
+    setCoords(this.waylinesDoc, clonedWl);
+    if (clonedWl) setChildText(this.waylinesDoc, clonedWl, 'wpml:executeHeight', absHeight);
+    if (clonedTpl) {
+      if (firstChildEl(clonedTpl, 'wpml:ellipsoidHeight')) {
+        setChildText(this.templateDoc, clonedTpl, 'wpml:ellipsoidHeight', absHeight);
+      }
+      if (firstChildEl(clonedTpl, 'wpml:height')) {
+        const agl = refAlt != null
+          ? parseFloat((absHeight - refAlt).toFixed(4))
+          : parseFloat(childText(clonedTpl, 'wpml:height'));
+        setChildText(this.templateDoc, clonedTpl, 'wpml:height', agl);
+      }
+      if (firstChildEl(clonedTpl, 'wpml:useGlobalHeight')) {
+        setChildText(this.templateDoc, clonedTpl, 'wpml:useGlobalHeight', 0);
+      }
+    }
+    if (clonedWl && firstChildEl(clonedWl, 'wpml:useGlobalHeight')) {
+      setChildText(this.waylinesDoc, clonedWl, 'wpml:useGlobalHeight', 0);
+    }
+
+    // Index BEFORE adding the action (so _reachPointGroup stamps the right actionGroupStartIndex).
+    if (clonedTpl) setChildText(this.templateDoc, clonedTpl, 'wpml:index', newIndex);
+    if (clonedWl) setChildText(this.waylinesDoc, clonedWl, 'wpml:index', newIndex);
+
+    const tempWp = new Waypoint(this, newIndex, clonedTpl, clonedWl);
+    const { name, ...addOpts } = actionOpts;
+    const actionRec = tempWp.addAction(actionOpts.kind || 'takePhotoFixed', addOpts);
+    if (name) tempWp.setShotPhotoActionName(0, name);
+
+    const attach = () => {
+      shiftAffected(1);
+      if (clonedTpl && ref.tplNode) ref.tplNode.parentNode.insertBefore(clonedTpl, ref.tplNode.nextSibling);
+      if (clonedWl && ref.wlNode) ref.wlNode.parentNode.insertBefore(clonedWl, ref.wlNode.nextSibling);
+      this._index();
+    };
+    const detach = () => {
+      if (clonedTpl && clonedTpl.parentNode) clonedTpl.parentNode.removeChild(clonedTpl);
+      if (clonedWl && clonedWl.parentNode) clonedWl.parentNode.removeChild(clonedWl);
+      shiftAffected(-1);
+      this._index();
+    };
+
+    attach();
+    const newWp = this.waypoints.find((w) => w.index === newIndex);
+    return { waypoint: newWp, undo: detach, redo: attach };
   }
 
   /** Re-zip into a Buffer/Uint8Array, replacing only the two edited XML files. */
@@ -565,9 +735,11 @@ class Waypoint {
     const p = this._actionParam(a);
     const nm = p && (childText(p, 'wpml:fileSuffix') || childText(p, 'wpml:orientedFileSuffix'));
     const raw = p && childText(p, 'wpml:payloadLensIndex');
-    const norm = (l) => { const x = l.toLowerCase(); return (x.includes('ir') || x.includes('therm')) ? 'ir' : x.includes('zoom') ? 'zoom' : 'wide'; };
-    const lenses = raw ? raw.split(',').map((s) => s.trim()).filter(Boolean).map(norm) : [];
-    return { name: (nm && nm.trim()) || null, lenses };
+    const lenses = raw ? raw.split(',').map((s) => s.trim()).filter(Boolean).map(normLens) : [];
+    // useGlobalPayloadLensIndex: 1 = this shot follows the route's default lens set
+    // (Folder > wpml:payloadParam > wpml:imageFormat), 0 = the lenses above are an explicit override.
+    const followRoute = childText(p, 'wpml:useGlobalPayloadLensIndex') === '1';
+    return { name: (nm && nm.trim()) || null, lenses, followRoute };
   }
 
   // First photo action's name (backwards-compat); use photoActionNames for all.
@@ -617,7 +789,7 @@ class Waypoint {
   // orientedShoot's baked value.
   get photoShots() {
     return this._shotBlocks(this._primary).map((b, i) => {
-      const info = this._photoActionInfo(b.shot) || { name: null, lenses: [] };
+      const info = this._photoActionInfo(b.shot) || { name: null, lenses: [], followRoute: false };
       const os = b.func === 'orientedShoot' ? this._actionParam(b.shot) : null;
       const read = (action, tag) => {
         const p = action && this._actionParam(action);
@@ -629,7 +801,7 @@ class Waypoint {
       const heading = read(b.yaw, 'wpml:aircraftHeading');
       const focal = read(b.zoom, 'wpml:focalLength');
       return {
-        index: i, name: info.name, lenses: info.lenses, func: b.func,
+        index: i, name: info.name, lenses: info.lenses, followRoute: info.followRoute, func: b.func,
         gimbalPitch: pitch != null ? pitch : osv('wpml:gimbalPitchRotateAngle'),
         aircraftHeading: heading != null ? heading : osv('wpml:aircraftHeading'),
         zoomFocalLength: focal != null ? focal : osv('wpml:focalLength'),
@@ -672,6 +844,52 @@ class Waypoint {
     apply(this.mission.templateDoc, this.tplNode);
   }
 
+  // Edit ONE shot's Visible/IR lens selection (block index k), in both docs.
+  // { followRoute: true }  → defer to the route's default (Folder > wpml:payloadParam >
+  //   wpml:imageFormat): useGlobalPayloadLensIndex=1; template OMITS payloadLensIndex (implied by
+  //   the route default), waylines keeps a resolved snapshot of that default (verified asymmetry
+  //   against a real FlightHub-exported KMZ).
+  // { followRoute: false, lenses: [...] } → explicit override: useGlobalPayloadLensIndex=0 and an
+  //   explicit payloadLensIndex in both docs.
+  // takePhoto shots have no "follow route" concept in this schema — always given an explicit list.
+  setShotLenses(k, { followRoute, lenses = [] } = {}) {
+    const rawValue = lenses.map(rawLensToken).join(',');
+    const apply = (doc, node, isWl) => {
+      const b = this._shotBlocks(node)[k]; if (!b || !b.shot) return;
+      const p = this._actionParam(b.shot); if (!p) return;
+      if (b.func !== 'orientedShoot') {
+        setChildText(doc, p, 'wpml:payloadLensIndex', rawValue);
+        return;
+      }
+      if (followRoute) {
+        setChildText(doc, p, 'wpml:useGlobalPayloadLensIndex', 1);
+        if (!isWl) { removeChild(p, 'wpml:payloadLensIndex'); return; }
+        const snapshot = this.mission.globalLenses.map(rawLensToken).join(',');
+        setChildText(doc, p, 'wpml:payloadLensIndex', snapshot);
+      } else {
+        setChildText(doc, p, 'wpml:useGlobalPayloadLensIndex', 0);
+        setChildText(doc, p, 'wpml:payloadLensIndex', rawValue);
+      }
+    };
+    apply(this.mission.waylinesDoc, this.wlNode, true);
+    apply(this.mission.templateDoc, this.tplNode, false);
+  }
+
+  // Edit ONE shot's planned name (block index k) — the fileSuffix/orientedFileSuffix DJI Pilot
+  // appends to its own DJI_<timestamp>_<seq>_<band> prefix at capture time. Unlike
+  // setPhotoActionName (waypoint-wide, first match only), this targets a specific shot on a
+  // multi-shot waypoint.
+  setShotPhotoActionName(k, name) {
+    const apply = (doc, node) => {
+      const b = this._shotBlocks(node)[k]; if (!b || !b.shot) return;
+      const p = this._actionParam(b.shot); if (!p) return;
+      const tag = b.func === 'orientedShoot' ? 'wpml:orientedFileSuffix' : 'wpml:fileSuffix';
+      setChildText(doc, p, tag, name);
+    };
+    apply(this.mission.waylinesDoc, this.wlNode);
+    apply(this.mission.templateDoc, this.tplNode);
+  }
+
   // --- add actions ---------------------------------------------------------
   // Insert a new action (or capture block) into this waypoint's reachPoint action group, in BOTH
   // docs, with fresh sequential actionIds. Serialization matches what FlightHub emits (verified
@@ -686,6 +904,10 @@ class Waypoint {
       pitch: opts.pitch != null ? opts.pitch : (this.gimbalPitch != null ? this.gimbalPitch : -90),
       focal: opts.focal != null ? opts.focal : (this.zoomFocalLength != null ? this.zoomFocalLength : 24),
       lens: opts.lens || 'visable,ir',
+      // Default to "follow route": a brand-new shot defers to the route's own default lens set
+      // (Folder > payloadParam > imageFormat, editable via the app's Camera Settings control) —
+      // the operator can disable this per-shot afterward. `opts.lens` is still required as the
+      // waylines snapshot value even in follow-route mode (see actionBlockXml's orientedShoot()).
       useGlobalLens: opts.useGlobalLens != null ? opts.useGlobalLens : 1,
     };
     const created = [];

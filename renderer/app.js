@@ -28,6 +28,8 @@ const state = {
   heightUnit: 'm',          // display/input unit for heights: 'm' | 'ft' (internal values stay metres)
   shownPhoto: null,         // photo currently rendered in the image-info panel (for unit re-render)
   aimShot: 0,               // which photo action (shot) on the selected waypoint the aim editor edits
+  editingShotName: null,    // shot index currently being renamed in the Photo actions panel, or null
+  aircraftIrOverride: true, // whether this aircraft is treated as IR-capable — defaults ON, operator disables per-route
 };
 
 // West Texas geoid separation (ellipsoid − MSL ≈ −25.4 m): used to place ASL/MSL routes.
@@ -279,6 +281,12 @@ function wireUi() {
   document.querySelectorAll('.add-act-btn').forEach((btn) => {
     btn.onclick = () => addWpAction(btn.dataset.add);
   });
+
+  // Route-wide Camera Settings (default Visible/IR lens set) + aircraft IR-capability override.
+  document.querySelectorAll('#camera-settings-row .lens-pill').forEach((btn) => {
+    btn.onclick = () => toggleGlobalLens(btn.dataset.glens);
+  });
+  $('ir-support-toggle').onclick = toggleIrSupport;
 
   // Global undo/redo: top-bar buttons + Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z also redoes).
   // Skipped while typing in a text field so native text-editing undo still works there.
@@ -708,6 +716,9 @@ let aimDraft = null;        // { wpIndex, shot, origYaw, origTilt, origAlt } whi
 const wrap180 = (v) => ((v + 180) % 360 + 360) % 360 - 180;
 const round1 = (v) => parseFloat(v.toFixed(1));
 const round2 = (v) => parseFloat(v.toFixed(2));
+
+// Raw WPML lens token for a normalized wide/ir/zoom value (mirrors kmz.js's rawLensToken).
+const rawLensToken = (n) => (n === 'wide' ? 'visable' : n);
 
 function aimCurrentWp() { return state.selected >= 0 ? wpByIndex(state.selected) : null; }
 
@@ -1146,6 +1157,9 @@ function resetSession() {
   renderPhotos();
   renderImageInfo(null);
   renderWpActions(null);
+  state.editingShotName = null;
+  state.aircraftIrOverride = true;
+  renderCameraSettingsRow();
   $('ph-count').textContent = '—';
   $('sel-idx').textContent = 'none';
   setStatus('Session cleared — open a route to begin.');
@@ -1314,10 +1328,12 @@ async function applyRoute(res) {
   updateShiftReadout();
   updateFilesBadge();
   clearHistory();
+  state.aircraftIrOverride = true; // fresh route defaults to IR-capable; operator disables per-route if needed
   renderList();
   matchPhotos();
   drawWaypoints();
   fitView();
+  renderCameraSettingsRow();
   const g = state.mission.globals();
   state.takeOffRefAltitude = g.takeOffRefAltitude ?? null; // cached for FPV AGL readout
 
@@ -1418,7 +1434,7 @@ function lensDots(list) {
 function selectWaypoint(index) {
   // Leaving a waypoint with an unconfirmed aim edit discards it (back to original).
   if (aimDraft && aimDraft.wpIndex !== index) revertAim();
-  if (index !== state.selected) state.aimShot = 0; // start on the first shot of a new waypoint
+  if (index !== state.selected) { state.aimShot = 0; state.editingShotName = null; } // start on the first shot of a new waypoint
   state.selected = index;
   const wp = wpByIndex(index);
   if (!wp) return;
@@ -1440,49 +1456,317 @@ function selectWaypoint(index) {
   if (state.fpv) updateFpvOverlay();
 }
 
-// Show the selected waypoint's photo actions (name + lens badges), straight from the route.
+// A shot's planned name/label must be safe for FlightHub the same way a route name is (no
+// underscores or other forbidden characters) — but unlike a route name, an empty label is fine
+// (it just means "unnamed").
+function validateShotName(name) {
+  if (!name) return { ok: true, message: '' };
+  return validateRouteName(name);
+}
+
+// DJI's placeholder prefix for a shot's real captured filename, filled in by the drone at flight
+// time: DJI_<14-digit datetime>_<4-digit seq>_<band letter(s)>_ — band letter per lens (V=visible,
+// T=thermal/IR, Z=zoom); a shot with more than one lens produces one file per lens, same label.
+function escapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+function djiNamePrefix(lenses) {
+  const letters = { wide: 'V', ir: 'T', zoom: 'Z' };
+  const bands = (lenses && lenses.length ? lenses : ['wide']).map((l) => letters[l] || 'V');
+  return `DJI_YYYYMMDDhhmmss_XXXX_${[...new Set(bands)].join('/')}_`;
+}
+
+// Show the selected waypoint's photo actions: per-shot name editor (DJI-format placeholder
+// prefix + editable label, Confirm-gated) + clickable VISIBLE/IR/Follow-Route pills.
 function renderWpActions(wp) {
   const el = $('wp-actions'); if (!el) return;
   if (!wp) { el.innerHTML = '<div class="info-hint">—</div>'; $('wp-act-count').textContent = '—'; return; }
-  const acts = wp.photoActions || [];
+  const acts = wp.photoShots || [];
   $('wp-act-count').textContent = acts.length || '0';
   if (!acts.length) { el.innerHTML = '<div class="info-hint">No photo action at this waypoint.</div>'; return; }
-  const lensBadge = (l) => {
-    const lab = l === 'ir' ? 'IR' : l === 'zoom' ? 'ZOOM' : 'VISIBLE';
-    const cls = l === 'ir' ? 'band-ir' : l === 'zoom' ? 'band-zoom' : 'band-wide';
-    return `<span class="lens-badge ${cls}">${lab}</span>`;
-  };
   const multi = acts.length > 1;
   el.innerHTML = acts.map((a, i) => {
     const num = multi ? `<span class="wp-act-no">${i + 1}</span>` : '';
-    const badges = a.lenses.length ? a.lenses.map(lensBadge).join('') : '<span class="info-dim">—</span>';
-    const nm = a.name ? a.name : '<span class="info-dim">(unnamed)</span>';
-    // On multi-shot waypoints each row selects that shot for the aim editor.
     const sel = multi && i === state.aimShot ? ' shot-active' : '';
     const clickable = multi ? ' wp-act-pick' : '';
-    return `<div class="wp-act${clickable}${sel}" data-shot="${i}" ${multi ? 'title="Click to edit this shot in the camera-aim editor"' : ''}>${num}<div class="wp-act-body"><div class="wp-act-name">${nm}</div><div class="wp-act-lenses">${badges}</div></div></div>`;
+
+    let nameHtml;
+    if (state.editingShotName === i) {
+      nameHtml = `<div class="wp-act-name-editor">
+        <span class="wp-act-name-prefix">${djiNamePrefix(a.lenses)}</span>
+        <input type="text" class="wp-act-name-input" data-shot="${i}" value="${escapeAttr(a.name || '')}" />
+        <button class="wp-name-action confirm wp-act-name-confirm" data-shot="${i}" title="Confirm (Enter)">✓</button>
+        <button class="wp-name-action cancel wp-act-name-cancel" data-shot="${i}" title="Discard (Esc)">✗</button>
+      </div>`;
+    } else {
+      const nm = a.name ? a.name : '<span class="info-dim">(unnamed)</span>';
+      nameHtml = `<div class="wp-act-name-view">
+        <span class="wp-act-name">${djiNamePrefix(a.lenses)}${nm}</span>
+        <button class="wp-act-name-edit-btn" data-shot="${i}" title="Edit this shot's name">✎</button>
+      </div>`;
+    }
+
+    const wideOn = a.lenses.includes('wide'), irOn = a.lenses.includes('ir');
+    const disabled = a.followRoute ? 'disabled' : '';
+    const irDisabled = (a.followRoute || !aircraftHasIr()) ? 'disabled' : '';
+    // "Follow Route" only exists for orientedShoot shots in this schema — takePhoto always
+    // carries its own explicit lens list (verified against a real FlightHub-exported KMZ).
+    const followPill = a.func === 'orientedShoot'
+      ? `<button class="lens-pill follow${a.followRoute ? ' active' : ''}" data-shot="${i}" data-follow="1" title="Follow the route's default lens set (Camera Settings)">FOLLOW ROUTE</button>`
+      : '';
+    const lensRow = `<div class="wp-act-lenses">
+      <button class="lens-pill wide${wideOn ? ' active' : ''}" data-shot="${i}" data-lens="wide" ${disabled}>VISIBLE</button>
+      <button class="lens-pill ir${irOn ? ' active' : ''}" data-shot="${i}" data-lens="ir" ${irDisabled} ${irDisabled ? 'title="This aircraft has no IR sensor"' : ''}>IR</button>
+      ${followPill}
+    </div>`;
+
+    return `<div class="wp-act${clickable}${sel}" data-shot="${i}" ${multi ? 'title="Click to edit this shot in the camera-aim editor"' : ''}>${num}<div class="wp-act-body">${nameHtml}${lensRow}</div></div>`;
   }).join('');
-  if (multi && !el.dataset.wired) {
+
+  if (!el.dataset.wired) {
     el.dataset.wired = '1';
     el.addEventListener('click', (e) => {
-      const row = e.target.closest('.wp-act-pick'); if (!row) return;
-      selectAimShot(parseInt(row.dataset.shot, 10));
-      renderWpActions(aimCurrentWp()); // refresh the active-row highlight
+      const editBtn = e.target.closest('.wp-act-name-edit-btn');
+      if (editBtn) {
+        state.editingShotName = parseInt(editBtn.dataset.shot, 10);
+        renderWpActions(aimCurrentWp());
+        const input = el.querySelector('.wp-act-name-input');
+        if (input) { input.focus(); input.select(); }
+        return;
+      }
+      const cancelBtn = e.target.closest('.wp-act-name-cancel');
+      if (cancelBtn) { state.editingShotName = null; renderWpActions(aimCurrentWp()); return; }
+      const confirmBtn = e.target.closest('.wp-act-name-confirm');
+      if (confirmBtn) { confirmShotName(parseInt(confirmBtn.dataset.shot, 10)); return; }
+      const lensPill = e.target.closest('.lens-pill');
+      if (lensPill && !lensPill.disabled) {
+        const k = parseInt(lensPill.dataset.shot, 10);
+        if (lensPill.dataset.follow) toggleShotFollowRoute(k);
+        else toggleShotLens(k, lensPill.dataset.lens);
+        return;
+      }
+      // .wp-act-pick is only present on rows the CURRENT render marked multi-shot-pickable —
+      // don't gate on the `multi` closure var, it's stale after the first wiring (this listener
+      // is attached once, but re-renders for different waypoints happen on every selection).
+      const row = e.target.closest('.wp-act-pick');
+      if (row) {
+        selectAimShot(parseInt(row.dataset.shot, 10));
+        renderWpActions(aimCurrentWp()); // refresh the active-row highlight
+      }
+    });
+    el.addEventListener('keydown', (e) => {
+      const input = e.target.closest('.wp-act-name-input'); if (!input) return;
+      if (e.key === 'Enter') { e.preventDefault(); confirmShotName(parseInt(input.dataset.shot, 10)); }
+      else if (e.key === 'Escape') { e.preventDefault(); state.editingShotName = null; renderWpActions(aimCurrentWp()); }
     });
   }
 }
 
+// Confirm an in-progress shot-name edit (Photo actions panel) and write it into the route.
+function confirmShotName(k) {
+  const wp = aimCurrentWp(); if (!wp) return;
+  const el = $('wp-actions');
+  const input = el && el.querySelector(`.wp-act-name-input[data-shot="${k}"]`);
+  if (!input) return;
+  const value = input.value.trim();
+  const v = validateShotName(value);
+  if (!v.ok) { setStatus(v.message); return; }
+  const before = (wp.photoShots[k] || {}).name || '';
+  wp.setShotPhotoActionName(k, value);
+  state.editingShotName = null;
+  setDirty(true);
+  renderWpActions(wpByIndex(state.selected));
+  pushHistory({
+    label: `rename shot ${k + 1} · WP ${wp.index + 1}`,
+    undo: () => { wp.setShotPhotoActionName(k, before); setDirty(true); renderWpActions(wpByIndex(state.selected)); },
+    redo: () => { wp.setShotPhotoActionName(k, value); setDirty(true); renderWpActions(wpByIndex(state.selected)); },
+  });
+  setStatus(`Renamed shot ${k + 1} on WP ${wp.index + 1} — Export KMZ to save.`);
+}
+
+// Toggle one shot's VISIBLE/IR lens selection (only while it's NOT following the route default).
+function toggleShotLens(k, lens) {
+  const wp = aimCurrentWp(); if (!wp) return;
+  const shot = wp.photoShots[k]; if (!shot || shot.followRoute) return;
+  const before = shot.lenses.slice();
+  if (lens === 'ir' && !before.includes('ir') && !aircraftHasIr()) {
+    setStatus('This aircraft has no IR sensor — mark it IR-capable first if that\'s wrong.');
+    return;
+  }
+  const after = before.includes(lens) ? before.filter((l) => l !== lens) : [...before, lens];
+  applyShotLenses(wp, k, before, after);
+}
+
+// Toggle a shot between an explicit Visible/IR override and following the route's default.
+function toggleShotFollowRoute(k) {
+  const wp = aimCurrentWp(); if (!wp) return;
+  const shot = wp.photoShots[k]; if (!shot) return;
+  const wasFollowing = shot.followRoute;
+  const beforeLenses = shot.lenses.slice();
+  const refresh = () => { setDirty(true); renderWpActions(wpByIndex(state.selected)); if (state.fpv) updateFpvOverlay(); };
+  if (wasFollowing) {
+    // Turning it off: keep whatever lenses were currently displayed (the resolved route default).
+    wp.setShotLenses(k, { followRoute: false, lenses: beforeLenses });
+  } else {
+    wp.setShotLenses(k, { followRoute: true, lenses: beforeLenses });
+  }
+  refresh();
+  pushHistory({
+    label: `${wasFollowing ? 'unlink' : 'follow route'} · shot ${k + 1} WP ${wp.index + 1}`,
+    undo: () => { wp.setShotLenses(k, { followRoute: wasFollowing, lenses: beforeLenses }); refresh(); },
+    redo: () => { wp.setShotLenses(k, { followRoute: !wasFollowing, lenses: beforeLenses }); refresh(); },
+  });
+}
+
+function applyShotLenses(wp, k, before, after) {
+  const refresh = () => { setDirty(true); renderWpActions(wpByIndex(state.selected)); if (state.fpv) updateFpvOverlay(); };
+  wp.setShotLenses(k, { followRoute: false, lenses: after });
+  refresh();
+  pushHistory({
+    label: `set lenses · shot ${k + 1} WP ${wp.index + 1}`,
+    undo: () => { wp.setShotLenses(k, { followRoute: false, lenses: before }); refresh(); },
+    redo: () => { wp.setShotLenses(k, { followRoute: false, lenses: after }); refresh(); },
+  });
+}
+
+// Best-effort friendly label for the route's aircraft/payload — from DJI's published WPML enum
+// (https://developer.dji.com/doc/cloud-api-tutorial/en/api-reference/dji-wpml/common-element.html)
+// where known. The Matrice 4 series isn't in DJI's published table as of this writing (both an
+// M4D-only and an M4TD route report the same droneEnumValue/droneSubEnumValue), so its variant
+// (E/T/D/TD) can't be told apart from these codes alone — labeled generically. IR capability is a
+// separate, manually-set toggle (see aircraftHasIr), not inferred from these codes.
+const DRONE_LABELS = {
+  60: 'M300 RTK', 67: 'M30/M30T', 77: 'M3E/M3T/M3M', 89: 'M350 RTK', 91: 'M3D/M3TD',
+  // Not in DJI's published table as of this writing — confirmed empirically (an M4D-only route
+  // and an M4TD route both report 100/1), so the exact camera variant isn't encoded here.
+  100: 'Matrice 4-series (E/T/D/TD — exact camera not encoded in WPML)',
+};
+function droneLabel(mission) {
+  if (!mission) return '—';
+  const g = mission.globals();
+  if (!g.droneEnumValue) return '—';
+  const code = `${g.droneEnumValue}/${g.droneSubEnumValue ?? '?'}`;
+  const known = DRONE_LABELS[parseInt(g.droneEnumValue, 10)];
+  return known ? `${known} (code ${code})` : `Unknown aircraft (code ${code})`;
+}
+
+// Whether the aircraft's camera has an IR/thermal sensor at all. WPML's drone/payload codes don't
+// reliably disambiguate this for the Matrice 4 series (verified: an M4D-only route and an M4TD
+// route report identical codes), so this isn't auto-detected — it defaults ON (the operator's
+// primary aircraft is IR-capable) and the operator disables it manually for the rare Visible-only
+// (M4D/M4E/M3E/M30) mission.
+function aircraftHasIr() { return state.aircraftIrOverride; }
+
+function renderCameraSettingsRow() {
+  const label = $('drone-info-label'); if (label) label.textContent = droneLabel(state.mission);
+  const irOk = aircraftHasIr();
+  const irSupportBtn = $('ir-support-toggle');
+  if (irSupportBtn) {
+    irSupportBtn.classList.toggle('active', irOk);
+    irSupportBtn.title = irOk
+      ? 'This aircraft is treated as IR-capable — click to mark it Visible-only (e.g. Matrice 4D/3E/30).'
+      : 'This aircraft is treated as Visible-only (no IR sensor) — click if it actually has IR/thermal.';
+  }
+  const row = $('camera-settings-row'); if (!row) return;
+  const list = state.mission ? state.mission.globalLenses : [];
+  const wideBtn = $('glens-wide'), irBtn = $('glens-ir');
+  if (wideBtn) wideBtn.classList.toggle('active', list.includes('wide'));
+  if (irBtn) {
+    irBtn.classList.toggle('active', list.includes('ir'));
+    irBtn.disabled = !irOk;
+    irBtn.title = irOk ? '' : 'This aircraft has no IR sensor';
+  }
+}
+
+function toggleIrSupport() {
+  state.aircraftIrOverride = !aircraftHasIr();
+  renderCameraSettingsRow();
+  renderWpActions(wpByIndex(state.selected));
+}
+
+function toggleGlobalLens(lens) {
+  const mission = state.mission; if (!mission) return;
+  if (lens === 'ir' && !mission.globalLenses.includes('ir') && !aircraftHasIr()) {
+    setStatus('This aircraft has no IR sensor — mark it IR-capable first if that\'s wrong.');
+    return;
+  }
+  const before = mission.globalLenses.slice();
+  const after = before.includes(lens) ? before.filter((l) => l !== lens) : [...before, lens];
+  const refresh = () => {
+    setDirty(true);
+    renderCameraSettingsRow();
+    renderWpActions(wpByIndex(state.selected));
+    if (state.fpv) updateFpvOverlay();
+  };
+  mission.globalLenses = after;
+  refresh();
+  pushHistory({
+    label: 'set route default lenses (Camera Settings)',
+    undo: () => { mission.globalLenses = before; refresh(); },
+    redo: () => { mission.globalLenses = after; refresh(); },
+  });
+}
+
 // Add a new action to the selected waypoint (Photo actions bar + F key in FPV). For a
 // fixed-angle photo in the camera view, the current FPV camera aim + zoom are baked in.
+// Minimum 3D move (metres) from the waypoint's actual position before a photo gets its own
+// new waypoint instead of being baked onto the one you were at — small enough to catch a
+// deliberate W/S/A/D/C/Z nudge, large enough to ignore GPS/float jitter.
+const REPOSITION_THRESHOLD_M = 0.5;
+
 function addWpAction(kind) {
   const wp = wpByIndex(state.selected);
   if (!wp) { setStatus('Select a waypoint first.'); return; }
+  const mission = state.mission;
   const opts = {};
   if (kind === 'takePhotoFixed' && state.fpv && cesiumOK) {
     opts.heading = round1(wrap180(Cesium.Math.toDegrees(viewer.camera.heading)));
     opts.pitch = round1(Math.max(-90, Math.min(30, Cesium.Math.toDegrees(viewer.camera.pitch))));
     const f = activeShotFocal(); if (f != null) opts.focal = f;
   }
+  if (kind === 'takePhotoFixed' || kind === 'startRecord') {
+    // A brand-new shot defaults to "Follow Route" (the operator can disable it per-shot
+    // afterward) — opts.lens still carries the resolved value for the waylines snapshot, and
+    // never includes IR on an aircraft that isn't IR-capable even if the route's own default does.
+    let routeLenses = (mission && mission.globalLenses.length) ? mission.globalLenses : ['wide', 'ir'];
+    if (!aircraftHasIr()) routeLenses = routeLenses.filter((l) => l !== 'ir');
+    opts.lens = routeLenses.map(rawLensToken).join(',');
+    opts.useGlobalLens = 1;
+  }
+
+  const labels = { takePhotoFixed: 'fixed-angle photo', pano: 'pano', startRecord: 'start recording', stopRecord: 'stop recording' };
+  const label = labels[kind] || 'action';
+
+  // If the FPV camera has moved away from this waypoint's actual position/height, the shot
+  // belongs at a NEW waypoint — flying to the old one and shooting from the new vantage would be
+  // wrong — rather than baked onto the existing one.
+  if (kind === 'takePhotoFixed' && state.fpv && cesiumOK && wp.coordinates && mission) {
+    const wpPos = Cesium.Cartesian3.fromDegrees(wp.coordinates.lng, wp.coordinates.lat, wpDisplayHeight(wp));
+    const delta = Cesium.Cartesian3.distance(wpPos, viewer.camera.position);
+    if (delta >= REPOSITION_THRESHOLD_M) {
+      const cc = viewer.camera.positionCartographic;
+      const coordinates = { lng: Cesium.Math.toDegrees(cc.longitude), lat: Cesium.Math.toDegrees(cc.latitude) };
+      const absHeight = cc.height - (state.heightOffset || 0);
+      const rec = mission.insertWaypointAfter(wp.index, { coordinates, absHeight }, opts);
+      const insertedAt = rec.waypoint.index;
+      const refreshTo = (selIndex) => {
+        setDirty(true);
+        state.selected = selIndex;
+        renderList();
+        renderWpActions(wpByIndex(state.selected));
+        if (cesiumOK) { drawWaypoints(); if (state.fpv) { updateFpvOverlay(); refreshAimControls(); } }
+      };
+      refreshTo(insertedAt);
+      pushHistory({
+        label: `add ${label} · new WP ${insertedAt + 1} (repositioned)`,
+        undo: () => { rec.undo(); refreshTo(wp.index); },
+        redo: () => { rec.redo(); refreshTo(insertedAt); },
+      });
+      setStatus(`Added a new waypoint (WP ${insertedAt + 1}) for the repositioned shot — Export KMZ to save.`);
+      return;
+    }
+  }
+
   const rec = wp.addAction(kind, opts);
   const refresh = () => {
     setDirty(true);
@@ -1490,8 +1774,6 @@ function addWpAction(kind) {
     if (cesiumOK) { drawWaypoints(); if (state.fpv) { updateFpvOverlay(); refreshAimControls(); } }
   };
   refresh();
-  const labels = { takePhotoFixed: 'fixed-angle photo', pano: 'pano', startRecord: 'start recording', stopRecord: 'stop recording' };
-  const label = labels[kind] || 'action';
   pushHistory({
     label: `add ${label} · WP ${wp.index + 1}`,
     undo: () => { rec.undo(); refresh(); },

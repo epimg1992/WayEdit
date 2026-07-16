@@ -252,6 +252,16 @@
       <div class="rail-section" id="sec-actions">
         <div class="rail-head section-toggle" title="Click to collapse / expand"><h2>Photo actions</h2><span id="wp-act-count" class="count">—</span></div>
         <div class="sec-body add-action-body">
+          <div class="drone-info-row" id="drone-info-row">
+            <span class="add-action-lbl">AIRCRAFT</span>
+            <span class="drone-info-label" id="drone-info-label">—</span>
+            <button class="lens-pill ir" id="ir-support-toggle" title="Whether this aircraft's camera has an IR/thermal sensor. Defaults on — click to disable for a Visible-only aircraft (e.g. Matrice 4D / 3E / 30).">IR CAPABLE</button>
+          </div>
+          <div class="camera-settings-row" id="camera-settings-row" title="Route-wide default lens set (Camera Settings) — shots set to 'Follow Route' use this">
+            <span class="add-action-lbl">ROUTE</span>
+            <button class="lens-pill wide" id="glens-wide" data-glens="wide">VISIBLE</button>
+            <button class="lens-pill ir" id="glens-ir" data-glens="ir">IR</button>
+          </div>
           <div class="add-action-bar">
             <span class="add-action-lbl">ADD</span>
             <button class="add-act-btn" data-add="takePhotoFixed" title="Take Photo (Fixed Angle) — captures at the current camera aim. Shortcut: F in camera view">📷 Fixed&nbsp;Photo</button>
