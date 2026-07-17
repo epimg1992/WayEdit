@@ -116,6 +116,7 @@
       <!-- Create-new-route click-to-place banner -->
       <div id="placing-banner" class="placing-banner hidden">
         <span>Click the 3D model to place a waypoint</span>
+        <button class="btn danger" id="placing-cancel" title="Discard this route entirely — the 3D model stays loaded so you can start over">Cancel Route</button>
         <button class="btn" id="placing-done">Done (Esc)</button>
       </div>
       <!-- FPV camera overlay: lens bar, zoom/IR boxes, heading -->
@@ -375,6 +376,19 @@
       <div class="newroute-footer">
         <button class="btn" id="newroute-cancel">Cancel</button>
         <button class="btn primary" id="newroute-create">Create &amp; start placing waypoints</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic in-page confirm dialog. Deliberately NOT window.confirm(): in Electron that opens a
+       real native OS dialog, and closing one can leave the renderer window without proper keyboard
+       focus afterward, locking up whatever's shown next (e.g. Create new route's fields). -->
+  <div id="confirm-modal" class="session-modal hidden">
+    <div class="session-dialog confirm-dialog">
+      <div class="confirm-body" id="confirm-message"></div>
+      <div class="newroute-footer">
+        <button class="btn" id="confirm-cancel">Cancel</button>
+        <button class="btn danger" id="confirm-ok">OK</button>
       </div>
     </div>
   </div>

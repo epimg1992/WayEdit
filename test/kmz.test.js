@@ -457,3 +457,88 @@ async function buildOsSampleKmz() {
   console.error('\n  TEST FAILED (round 3):', e.message);
   process.exit(1);
 });
+
+// ---------------------------------------------------------------------------
+// Round 4: startRecord naming/lenses, per-action delete, whole-waypoint delete
+// ---------------------------------------------------------------------------
+
+(async () => {
+  let pass = 0;
+
+  // 1. startRecord gets the same name/lens editing surface as a photo shot.
+  const m = createBlankMission({ globalHeight: 20, imageFormat: ['wide', 'ir'] });
+  const wp0 = m.appendWaypoint({ coordinates: { lng: -102.10, lat: 31.98 }, absHeight: 850 }).waypoint;
+  wp0.addAction('takePhotoFixed', { heading: 0, pitch: -90, focal: 24, lens: 'visable,ir', useGlobalLens: 0 });
+  wp0.addAction('startRecord', { lens: 'visable,ir', useGlobalLens: 1 });
+  wp0.addAction('pano', {});
+  let shots = wp0.photoShots;
+  assert.strictEqual(shots.length, 3, 'photo + startRecord + pano all show up as shots');
+  assert.strictEqual(shots[1].func, 'startRecord');
+  assert.strictEqual(shots[1].followRoute, true, 'startRecord defaults to follow-route like other new shots');
+  assert.deepStrictEqual(shots[1].lenses, ['wide', 'ir'], 'follow-route startRecord resolves to the route default');
+  assert.strictEqual(shots[2].func, 'panoShot');
+  wp0.setShotPhotoActionName(1, 'Recording-Label');
+  wp0.setShotLenses(1, { followRoute: false, lenses: ['ir'] });
+  shots = wp0.photoShots;
+  assert.strictEqual(shots[1].name, 'Recording-Label', 'startRecord name editable like a photo shot');
+  assert.strictEqual(shots[1].followRoute, false);
+  assert.deepStrictEqual(shots[1].lenses, ['ir']);
+  const bufA = await m.toBuffer('node');
+  const mA = await loadMission(bufA);
+  const shotsA = mA.waypoints[0].photoShots;
+  assert.strictEqual(shotsA[1].name, 'Recording-Label', 'startRecord name survives round trip');
+  assert.deepStrictEqual(shotsA[1].lenses, ['ir']);
+  pass++;
+
+  // 2. deleteShot removes exactly one action, leaves the others untouched, undo/redo restores it.
+  const before2 = mA.waypoints[0].photoShots.length;
+  const rec2 = mA.waypoints[0].deleteShot(2); // the pano shot
+  assert.strictEqual(mA.waypoints[0].photoShots.length, before2 - 1, 'one shot removed');
+  assert.strictEqual(mA.waypoints[0].photoShots[1].name, 'Recording-Label', 'remaining shot untouched');
+  const bufB = await mA.toBuffer('node');
+  const mB = await loadMission(bufB);
+  assert.strictEqual(mB.waypoints[0].photoShots.length, before2 - 1, 'deletion survives round trip');
+  rec2.undo();
+  assert.strictEqual(mA.waypoints[0].photoShots.length, before2, 'undo restores the deleted shot');
+  assert.strictEqual(mA.waypoints[0].photoShots[2].func, 'panoShot', 'restored shot is the right one, in the right slot');
+  rec2.redo();
+  assert.strictEqual(mA.waypoints[0].photoShots.length, before2 - 1, 'redo removes it again');
+  pass++;
+
+  // 3. deleteWaypoint removes a waypoint and renumbers everything after it; undo restores exactly.
+  const m2 = createBlankMission({ globalHeight: 20 });
+  const w0 = m2.appendWaypoint({ coordinates: { lng: -102.10, lat: 31.98 }, absHeight: 840 }).waypoint;
+  w0.addAction('takePhotoFixed', {});
+  w0.setShotPhotoActionName(0, 'First');
+  m2.appendWaypoint({ coordinates: { lng: -102.11, lat: 31.97 }, absHeight: 845 }); // bare, no actions
+  const w2 = m2.appendWaypoint({ coordinates: { lng: -102.12, lat: 31.96 }, absHeight: 850 }).waypoint;
+  w2.addAction('takePhotoFixed', {});
+  w2.setShotPhotoActionName(0, 'Third');
+  assert.strictEqual(m2.waypoints.length, 3);
+
+  const rec3 = m2.deleteWaypoint(1); // remove the middle (bare) waypoint
+  assert.strictEqual(m2.waypoints.length, 2, 'waypoint count -1');
+  assert.deepStrictEqual(m2.waypoints.map((w) => w.index), [0, 1], 'renumbered sequentially');
+  assert.strictEqual(m2.waypoints[0].photoShots[0].name, 'First', 'first waypoint untouched');
+  assert.strictEqual(m2.waypoints[1].photoShots[0].name, 'Third', 'former WP2 is now WP1, data intact');
+  assert.strictEqual(m2.waypoints[1].height, 850, 'renumbered waypoint keeps its own height');
+
+  const bufC = await m2.toBuffer('node');
+  const mC = await loadMission(bufC);
+  assert.strictEqual(mC.waypoints.length, 2, 'deletion survives round trip');
+  assert.strictEqual(mC.waypoints[1].photoShots[0].name, 'Third');
+
+  rec3.undo();
+  assert.strictEqual(m2.waypoints.length, 3, 'undo restores the deleted waypoint');
+  assert.deepStrictEqual(m2.waypoints.map((w) => w.index), [0, 1, 2]);
+  assert.strictEqual(m2.waypoints[0].photoShots[0].name, 'First');
+  assert.strictEqual(m2.waypoints[2].photoShots[0].name, 'Third', 'original WP2 (now index 2 again) intact');
+  rec3.redo();
+  assert.strictEqual(m2.waypoints.length, 2, 'redo removes it again');
+  pass++;
+
+  console.log(`  All ${pass} round-4 (delete + startRecord naming) engine checks passed ✓`);
+})().catch((e) => {
+  console.error('\n  TEST FAILED (round 4):', e.message);
+  process.exit(1);
+});

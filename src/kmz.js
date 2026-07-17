@@ -537,6 +537,65 @@ class Mission {
     return { waypoint: newWp, undo: detach, redo: attach };
   }
 
+  // Remove a waypoint entirely — both docs' Placemark nodes, renumbering every subsequent
+  // waypoint's wpml:index (and its own actionGroup start/end indices) down by one. The inverse of
+  // insertWaypointAfter/appendWaypoint. Returns { undo, redo } in the same shape used elsewhere so
+  // it plugs into the existing global history stack.
+  deleteWaypoint(index) {
+    const target = this.waypoints.find((w) => w.index === index);
+    if (!target) throw new Error(`No waypoint at index ${index}`);
+
+    const affected = this.waypoints
+      .filter((w) => w.index > index)
+      .map((w) => ({ tpl: w.tplNode, wl: w.wlNode }));
+
+    const bumpIndex = (node, doc, delta) => {
+      if (!node) return;
+      const cur = parseInt(childText(node, 'wpml:index'), 10);
+      if (!isNaN(cur)) setChildText(doc, node, 'wpml:index', cur + delta);
+      for (const g of descendants(node, 'wpml:actionGroup')) {
+        const s = parseInt(childText(g, 'wpml:actionGroupStartIndex'), 10);
+        const e = parseInt(childText(g, 'wpml:actionGroupEndIndex'), 10);
+        if (!isNaN(s)) setChildText(doc, g, 'wpml:actionGroupStartIndex', s + delta);
+        if (!isNaN(e)) setChildText(doc, g, 'wpml:actionGroupEndIndex', e + delta);
+      }
+    };
+    const shiftAffected = (delta) => {
+      for (const a of affected) {
+        bumpIndex(a.tpl, this.templateDoc, delta);
+        bumpIndex(a.wl, this.waylinesDoc, delta);
+      }
+    };
+
+    // Capture original position so undo re-inserts in the exact same spot.
+    const tplParent = target.tplNode && target.tplNode.parentNode;
+    const tplNext = target.tplNode && target.tplNode.nextSibling;
+    const wlParent = target.wlNode && target.wlNode.parentNode;
+    const wlNext = target.wlNode && target.wlNode.nextSibling;
+
+    const detach = () => {
+      if (target.tplNode && target.tplNode.parentNode) target.tplNode.parentNode.removeChild(target.tplNode);
+      if (target.wlNode && target.wlNode.parentNode) target.wlNode.parentNode.removeChild(target.wlNode);
+      shiftAffected(-1);
+      this._index();
+    };
+    const reattach = () => {
+      if (target.tplNode && tplParent) {
+        if (tplNext && tplNext.parentNode === tplParent) tplParent.insertBefore(target.tplNode, tplNext);
+        else tplParent.appendChild(target.tplNode);
+      }
+      if (target.wlNode && wlParent) {
+        if (wlNext && wlNext.parentNode === wlParent) wlParent.insertBefore(target.wlNode, wlNext);
+        else wlParent.appendChild(target.wlNode);
+      }
+      shiftAffected(1);
+      this._index();
+    };
+
+    detach();
+    return { undo: reattach, redo: detach };
+  }
+
   /** Re-zip into a Buffer/Uint8Array, replacing only the two edited XML files. */
   async toBuffer(platform) {
     const ser = new XMLSerializer();
@@ -827,14 +886,17 @@ class Waypoint {
     );
   }
 
-  // Extract { name, lenses } from one action IF it's a photo capture. Handles both
-  // forms FlightHub produces:
+  // Extract { name, lenses } from one action IF it's a capture with its own name/lens config.
+  // Handles the forms FlightHub produces:
   //   • takePhoto    → name in <wpml:fileSuffix>,        lens token "wide"/"ir"/"zoom"
   //   • orientedShoot→ name in <wpml:orientedFileSuffix>, lens token "visable"(sic)/"ir"
-  // Lens tokens are normalized to wide/ir/zoom for display. Returns null for non-photo actions.
+  //   • startRecord  → name in <wpml:fileSuffix>, same lens/useGlobalPayloadLensIndex shape as
+  //     orientedShoot (including the template-omits/waylines-includes payloadLensIndex quirk).
+  // Lens tokens are normalized to wide/ir/zoom for display. Returns null for actions with no
+  // name/lens config of their own (panoShot, stopRecord, and the pre-position actions).
   _photoActionInfo(a) {
     const func = childText(a, 'wpml:actionActuatorFunc');
-    if (func !== 'takePhoto' && func !== 'orientedShoot') return null;
+    if (func !== 'takePhoto' && func !== 'orientedShoot' && func !== 'startRecord') return null;
     const p = this._actionParam(a);
     const nm = p && (childText(p, 'wpml:fileSuffix') || childText(p, 'wpml:orientedFileSuffix'));
     const raw = p && childText(p, 'wpml:payloadLensIndex');
@@ -870,7 +932,9 @@ class Waypoint {
   // Split a placemark's actions into per-shot blocks. FlightHub emits one
   // [rotateYaw, gimbalRotate, zoom, orientedShoot] group per shot; a capture action closes a
   // block and the yaw/gimbal/zoom seen since the previous capture are that shot's pre-position.
-  // Lets us edit ANY shot on a multi-shot waypoint, not just the first.
+  // Also closes a block on panoShot/startRecord/stopRecord — these have no pre-position triple in
+  // routes this app creates, but treating every action FlightHub can add as its own "shot" gives
+  // each one a stable index for selection, editing (where applicable), and deletion.
   _shotBlocks(node) {
     const out = [];
     let cur = { yaw: null, gimbal: null, zoom: null, shot: null, func: null };
@@ -879,7 +943,7 @@ class Waypoint {
       if (fn === 'rotateYaw') cur.yaw = a;
       else if (fn === 'gimbalRotate') cur.gimbal = a;
       else if (fn === 'zoom') cur.zoom = a;
-      else if (fn === 'takePhoto' || fn === 'orientedShoot') {
+      else if (fn === 'takePhoto' || fn === 'orientedShoot' || fn === 'panoShot' || fn === 'startRecord' || fn === 'stopRecord') {
         cur.shot = a; cur.func = fn; out.push(cur);
         cur = { yaw: null, gimbal: null, zoom: null, shot: null, func: null };
       }
@@ -960,7 +1024,10 @@ class Waypoint {
     const apply = (doc, node, isWl) => {
       const b = this._shotBlocks(node)[k]; if (!b || !b.shot) return;
       const p = this._actionParam(b.shot); if (!p) return;
-      if (b.func !== 'orientedShoot') {
+      // takePhoto has no "follow route" concept in this schema — always an explicit list.
+      // orientedShoot and startRecord share the same useGlobalPayloadLensIndex + template-omits/
+      // waylines-includes payloadLensIndex quirk.
+      if (b.func !== 'orientedShoot' && b.func !== 'startRecord') {
         setChildText(doc, p, 'wpml:payloadLensIndex', rawValue);
         return;
       }
@@ -991,6 +1058,41 @@ class Waypoint {
     };
     apply(this.mission.waylinesDoc, this.wlNode);
     apply(this.mission.templateDoc, this.tplNode);
+  }
+
+  // Remove ONE action/shot (block index k) entirely, in both docs — its pre-position
+  // rotateYaw/gimbalRotate/zoom (if any) plus the capture/record/pano action that closes it. Works
+  // for any block _shotBlocks produces: takePhoto, orientedShoot, panoShot, startRecord, stopRecord.
+  // Other shots/actions on the same waypoint, and every other waypoint, are untouched.
+  deleteShot(k) {
+    const detach = (doc, node) => {
+      const b = node && this._shotBlocks(node)[k]; if (!b) return null;
+      const nodes = [b.yaw, b.gimbal, b.zoom, b.shot].filter(Boolean);
+      const removed = nodes.map((el) => ({ el, parent: el.parentNode, next: el.nextSibling }));
+      removed.forEach(({ el, parent }) => parent.removeChild(el));
+      return removed;
+    };
+    const reattach = (removed) => {
+      if (!removed) return;
+      // Reverse order so each node's captured `next` is either untouched or already back in the
+      // tree from the previous iteration — inserting forward would land nodes in the wrong spot
+      // whenever `next` was itself one of the removed nodes.
+      for (let i = removed.length - 1; i >= 0; i--) {
+        const { el, parent, next } = removed[i];
+        if (next && next.parentNode === parent) parent.insertBefore(el, next);
+        else parent.appendChild(el);
+      }
+    };
+    const redetach = (removed) => {
+      if (!removed) return;
+      for (const { el, parent } of removed) { if (el.parentNode === parent) parent.removeChild(el); }
+    };
+    const wlRemoved = detach(this.mission.waylinesDoc, this.wlNode);
+    const tplRemoved = detach(this.mission.templateDoc, this.tplNode);
+    return {
+      undo: () => { reattach(wlRemoved); reattach(tplRemoved); },
+      redo: () => { redetach(wlRemoved); redetach(tplRemoved); },
+    };
   }
 
   // --- add actions ---------------------------------------------------------

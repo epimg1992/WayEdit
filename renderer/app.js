@@ -482,6 +482,12 @@ function wireUi() {
     };
   });
   $('placing-done').onclick = exitPlacingWaypoint;
+  $('placing-cancel').onclick = discardRoute;
+
+  // Generic confirm dialog
+  $('confirm-ok').onclick = () => resolveConfirm(true);
+  $('confirm-cancel').onclick = () => resolveConfirm(false);
+  $('confirm-modal').onclick = (e) => { if (e.target.id === 'confirm-modal') resolveConfirm(false); };
 
   // Column resize handles
   initColResize();
@@ -526,6 +532,7 @@ function wireUi() {
   // Global keyboard: Esc for lightbox, FPV movement keys
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !$('lightbox').classList.contains('hidden')) { closeLightbox(); return; }
+    if (e.key === 'Escape' && !$('confirm-modal').classList.contains('hidden')) { resolveConfirm(false); return; }
     if (e.key === 'Escape' && state.placingWaypoint) { exitPlacingWaypoint(); return; }
     // Shift+F toggles Camera view (FPV).
     if (e.shiftKey && (e.key === 'F' || e.key === 'f') && !isInputFocused()) {
@@ -541,6 +548,7 @@ function wireUi() {
       if (e.key === 'Escape') { revertAim(); e.preventDefault(); return; }
     }
     if (!isInputFocused() && $('lightbox').classList.contains('hidden') && state.mission) {
+      if (e.key === 'Delete' && state.selected >= 0) { e.preventDefault(); deleteSelectedWaypoint(); return; }
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         e.preventDefault();
         // Step through the currently-visible (filtered) waypoint list in display order,
@@ -1106,10 +1114,10 @@ function initShiftPanel() {
     ['shift-new-e', 'shift-new-n', 'shift-new-u'].forEach((id) => { $(id).value = ''; });
     setStatus(`Saved offset "${name}" from typed values.`);
   };
-  $('shift-del-preset').onclick = () => {
+  $('shift-del-preset').onclick = async () => {
     const p = selectedPreset();
     if (!p) { setStatus('Pick a saved offset to delete.'); return; }
-    if (!confirm(`Delete saved offset "${p.name}"?`)) return;
+    if (!(await confirmDialog(`Delete saved offset "${p.name}"?`))) return;
     storePresets(loadPresets().filter((x) => x.name !== p.name));
     renderPresets('');
   };
@@ -1131,8 +1139,8 @@ async function exportKmz() {
 // ---------------------------------------------------------------------------
 // Reset session
 // ---------------------------------------------------------------------------
-function resetSession() {
-  if (!confirm('Clear all loaded data and start a fresh session?')) return;
+async function resetSession() {
+  if (!(await confirmDialog('Clear all loaded data and start a fresh session?'))) return;
 
   shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0;
   $('shift-panel').classList.add('hidden');
@@ -1216,11 +1224,11 @@ async function renameMatchedPhotos() {
   const names = shooterWps.map((w) => w.photoActionName).filter(Boolean);
   const unique = new Set(names);
   if (unique.size < names.length || names.length < shooterWps.length) {
-    if (!confirm(
+    if (!(await confirmDialog(
       'Some waypoints share the same photo name or have no name.\n\n' +
       'Run "Uniquify WP names" first (Route menu), then Export KMZ before renaming photos.\n\n' +
       'Continue anyway? (photos without a unique WP name will be skipped)'
-    )) return;
+    ))) return;
   }
 
   // Count how many photos will be renamed.
@@ -1232,11 +1240,11 @@ async function renameMatchedPhotos() {
   }
   if (!total) { setStatus('No matched photos to rename.'); return; }
 
-  if (!confirm(
+  if (!(await confirmDialog(
     `Rename ${total} photos on disk?\n\n` +
     'Each file will be renamed so its DJI action-name matches its assigned waypoint.\n' +
     'This cannot be undone automatically — make a copy of the folder first if unsure.'
-  )) return;
+  ))) return;
 
   // DJI filename up to and including the band char: DJI_YYYYMMDDHHMMSS_SEQNUM_BAND
   // Everything after (the old action name) is replaced with the WP's current suffix.
@@ -1424,14 +1432,16 @@ function renderList(query) {
     tr.dataset.idx = wp.index;
     if (wp.index === state.selected) tr.classList.add('sel');
     const photos = state.photoByWp.get(wp.index) || [];
-    // With photos loaded: show how many matched this waypoint. Before loading: show how
-    // many shots the route expects here (e.g. a wide+IR stop = 2), styled dimmer.
+    // With photos loaded: show how many matched this waypoint. Before loading: show how many
+    // photo ACTIONS are planned here — one fixed-angle shot counts as 1 even if it captures both
+    // Visible and IR (that split is a lens choice, decided in the Photo actions panel, not a
+    // second action) — styled dimmer.
     let cell = '';
     if (photosLoaded) {
       if (photos.length) cell = `<span class="img-count">${photos.length}</span>`;
     } else {
-      const ex = wp.expectedImageCount;
-      if (ex) cell = `<span class="img-count expected" title="${ex} photo${ex === 1 ? '' : 's'} expected by the route">${ex}</span>`;
+      const ex = wp.photoActions.length;
+      if (ex) cell = `<span class="img-count expected" title="${ex} photo action${ex === 1 ? '' : 's'} planned at this waypoint">${ex}</span>`;
     }
     tr.innerHTML = `<td class="mono">${wp.index + 1}</td><td class="ph">${cell}</td>`;
     tr.onclick = () => selectWaypoint(wp.index);
@@ -1468,7 +1478,7 @@ function lensDots(list) {
 // ---------------------------------------------------------------------------
 // Selection
 // ---------------------------------------------------------------------------
-function selectWaypoint(index) {
+function selectWaypoint(index, opts = {}) {
   // Leaving a waypoint with an unconfirmed aim edit discards it (back to original).
   if (aimDraft && aimDraft.wpIndex !== index) revertAim();
   if (index !== state.selected) { state.aimShot = 0; state.editingShotName = null; } // start on the first shot of a new waypoint
@@ -1489,7 +1499,7 @@ function selectWaypoint(index) {
   const photoSearch = $('photo-search');
   if (photoSearch && photoSearch.value) { photoSearch.value = ''; }
   renderPhotos(index);
-  highlightWaypoint(index);
+  highlightWaypoint(index, opts);
   if (state.fpv) updateFpvOverlay();
 }
 
@@ -1507,57 +1517,76 @@ function validateShotName(name) {
 function escapeAttr(s) {
   return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
-function djiNamePrefix(lenses) {
+// DJI's placeholder prefix for a shot's real captured filename, filled in by the drone at flight
+// time. Photos: DJI_<14-digit datetime>_<4-digit seq>_<band letter(s)>_ (V=visible, T=thermal/IR,
+// Z=zoom; more than one lens produces one file per lens, same label). Recordings use a shorter
+// placeholder with no band letter (FlightHub's own convention — a recording session isn't split
+// into per-lens files the same way a single photo shot is).
+function djiNamePrefix(a) {
+  if (a.func === 'startRecord') return 'DJI_YYYYMMDDhhmm_XXX_';
   const letters = { wide: 'V', ir: 'T', zoom: 'Z' };
-  const bands = (lenses && lenses.length ? lenses : ['wide']).map((l) => letters[l] || 'V');
+  const bands = (a.lenses && a.lenses.length ? a.lenses : ['wide']).map((l) => letters[l] || 'V');
   return `DJI_YYYYMMDDhhmmss_XXXX_${[...new Set(bands)].join('/')}_`;
 }
 
-// Show the selected waypoint's photo actions: per-shot name editor (DJI-format placeholder
-// prefix + editable label, Confirm-gated) + clickable VISIBLE/IR/Follow-Route pills.
+// Actions with no name/lens config of their own (kmz.js's _photoActionInfo returns null for
+// these) — shown as a simple labelled row with just a delete button.
+const SIMPLE_ACTION_LABELS = { panoShot: '360° Panorama', stopRecord: '■ Stop Recording' };
+
+// Show the selected waypoint's actions: photo/recording shots get the full per-shot name editor
+// (DJI-format placeholder prefix + editable label, Confirm-gated) + clickable VISIBLE/IR/Follow-
+// Route pills; pano/stop-recording get a simple confirmation row. Every row has a delete button.
 function renderWpActions(wp) {
   const el = $('wp-actions'); if (!el) return;
   if (!wp) { el.innerHTML = '<div class="info-hint">—</div>'; $('wp-act-count').textContent = '—'; return; }
   const acts = wp.photoShots || [];
   $('wp-act-count').textContent = acts.length || '0';
-  if (!acts.length) { el.innerHTML = '<div class="info-hint">No photo action at this waypoint.</div>'; return; }
+  if (!acts.length) { el.innerHTML = '<div class="info-hint">No actions at this waypoint.</div>'; return; }
   const multi = acts.length > 1;
   el.innerHTML = acts.map((a, i) => {
     const num = multi ? `<span class="wp-act-no">${i + 1}</span>` : '';
     const sel = multi && i === state.aimShot ? ' shot-active' : '';
     const clickable = multi ? ' wp-act-pick' : '';
+    const deleteBtn = `<button class="wp-act-delete-btn" data-shot="${i}" title="Delete this action">🗑</button>`;
 
-    let nameHtml;
-    if (state.editingShotName === i) {
-      nameHtml = `<div class="wp-act-name-editor">
-        <span class="wp-act-name-prefix">${djiNamePrefix(a.lenses)}</span>
-        <input type="text" class="wp-act-name-input" data-shot="${i}" value="${escapeAttr(a.name || '')}" />
-        <button class="wp-name-action confirm wp-act-name-confirm" data-shot="${i}" title="Confirm (Enter)">✓</button>
-        <button class="wp-name-action cancel wp-act-name-cancel" data-shot="${i}" title="Discard (Esc)">✗</button>
-      </div>`;
+    const nameable = a.func === 'takePhoto' || a.func === 'orientedShoot' || a.func === 'startRecord';
+    let bodyHtml;
+    if (!nameable) {
+      bodyHtml = `<div class="wp-act-name">${SIMPLE_ACTION_LABELS[a.func] || a.func}</div>`;
     } else {
-      const nm = a.name ? a.name : '<span class="info-dim">(unnamed)</span>';
-      nameHtml = `<div class="wp-act-name-view">
-        <span class="wp-act-name">${djiNamePrefix(a.lenses)}${nm}</span>
-        <button class="wp-act-name-edit-btn" data-shot="${i}" title="Edit this shot's name">✎</button>
+      let nameHtml;
+      if (state.editingShotName === i) {
+        nameHtml = `<div class="wp-act-name-editor">
+          <span class="wp-act-name-prefix">${djiNamePrefix(a)}</span>
+          <input type="text" class="wp-act-name-input" data-shot="${i}" value="${escapeAttr(a.name || '')}" />
+          <button class="wp-name-action confirm wp-act-name-confirm" data-shot="${i}" title="Confirm (Enter)">✓</button>
+          <button class="wp-name-action cancel wp-act-name-cancel" data-shot="${i}" title="Discard (Esc)">✗</button>
+        </div>`;
+      } else {
+        const nm = a.name ? a.name : '<span class="info-dim">(unnamed)</span>';
+        nameHtml = `<div class="wp-act-name-view">
+          <span class="wp-act-name">${djiNamePrefix(a)}${nm}</span>
+          <button class="wp-act-name-edit-btn" data-shot="${i}" title="Edit this shot's name">✎</button>
+        </div>`;
+      }
+
+      const wideOn = a.lenses.includes('wide'), irOn = a.lenses.includes('ir');
+      const disabled = a.followRoute ? 'disabled' : '';
+      const irDisabled = (a.followRoute || !aircraftHasIr()) ? 'disabled' : '';
+      // "Follow Route" exists for orientedShoot and startRecord in this schema — takePhoto always
+      // carries its own explicit lens list (verified against a real FlightHub-exported KMZ).
+      const followPill = (a.func === 'orientedShoot' || a.func === 'startRecord')
+        ? `<button class="lens-pill follow${a.followRoute ? ' active' : ''}" data-shot="${i}" data-follow="1" title="Follow the route's default lens set (Camera Settings)">FOLLOW ROUTE</button>`
+        : '';
+      const lensRow = `<div class="wp-act-lenses">
+        <button class="lens-pill wide${wideOn ? ' active' : ''}" data-shot="${i}" data-lens="wide" ${disabled}>VISIBLE</button>
+        <button class="lens-pill ir${irOn ? ' active' : ''}" data-shot="${i}" data-lens="ir" ${irDisabled} ${irDisabled ? 'title="This aircraft has no IR sensor"' : ''}>IR</button>
+        ${followPill}
       </div>`;
+      bodyHtml = nameHtml + lensRow;
     }
 
-    const wideOn = a.lenses.includes('wide'), irOn = a.lenses.includes('ir');
-    const disabled = a.followRoute ? 'disabled' : '';
-    const irDisabled = (a.followRoute || !aircraftHasIr()) ? 'disabled' : '';
-    // "Follow Route" only exists for orientedShoot shots in this schema — takePhoto always
-    // carries its own explicit lens list (verified against a real FlightHub-exported KMZ).
-    const followPill = a.func === 'orientedShoot'
-      ? `<button class="lens-pill follow${a.followRoute ? ' active' : ''}" data-shot="${i}" data-follow="1" title="Follow the route's default lens set (Camera Settings)">FOLLOW ROUTE</button>`
-      : '';
-    const lensRow = `<div class="wp-act-lenses">
-      <button class="lens-pill wide${wideOn ? ' active' : ''}" data-shot="${i}" data-lens="wide" ${disabled}>VISIBLE</button>
-      <button class="lens-pill ir${irOn ? ' active' : ''}" data-shot="${i}" data-lens="ir" ${irDisabled} ${irDisabled ? 'title="This aircraft has no IR sensor"' : ''}>IR</button>
-      ${followPill}
-    </div>`;
-
-    return `<div class="wp-act${clickable}${sel}" data-shot="${i}" ${multi ? 'title="Click to edit this shot in the camera-aim editor"' : ''}>${num}<div class="wp-act-body">${nameHtml}${lensRow}</div></div>`;
+    return `<div class="wp-act${clickable}${sel}" data-shot="${i}" ${multi ? 'title="Click to edit this shot in the camera-aim editor"' : ''}>${num}<div class="wp-act-body">${bodyHtml}</div>${deleteBtn}</div>`;
   }).join('');
 
   if (!el.dataset.wired) {
@@ -1575,6 +1604,8 @@ function renderWpActions(wp) {
       if (cancelBtn) { state.editingShotName = null; renderWpActions(aimCurrentWp()); return; }
       const confirmBtn = e.target.closest('.wp-act-name-confirm');
       if (confirmBtn) { confirmShotName(parseInt(confirmBtn.dataset.shot, 10)); return; }
+      const deleteBtn = e.target.closest('.wp-act-delete-btn');
+      if (deleteBtn) { deleteWpShotAction(parseInt(deleteBtn.dataset.shot, 10)); return; }
       const lensPill = e.target.closest('.lens-pill');
       if (lensPill && !lensPill.disabled) {
         const k = parseInt(lensPill.dataset.shot, 10);
@@ -1661,6 +1692,48 @@ function applyShotLenses(wp, k, before, after) {
     undo: () => { wp.setShotLenses(k, { followRoute: false, lenses: before }); refresh(); },
     redo: () => { wp.setShotLenses(k, { followRoute: false, lenses: after }); refresh(); },
   });
+}
+
+// Delete ONE action (shot index k) from the selected waypoint — no confirmation, matches the
+// other per-shot edits (lens/name) which are all immediate and just an undo away.
+function deleteWpShotAction(k) {
+  const wp = aimCurrentWp(); if (!wp) return;
+  const rec = wp.deleteShot(k);
+  const refresh = () => {
+    setDirty(true);
+    renderWpActions(wpByIndex(state.selected));
+    if (cesiumOK) { drawWaypoints(); if (state.fpv) { updateFpvOverlay(); refreshAimControls(); } }
+  };
+  refresh();
+  pushHistory({
+    label: `delete action ${k + 1} · WP ${wp.index + 1}`,
+    undo: () => { rec.undo(); refresh(); },
+    redo: () => { rec.redo(); refresh(); },
+  });
+  setStatus(`Deleted action ${k + 1} on WP ${wp.index + 1} — Export KMZ to save.`);
+}
+
+// Delete the whole selected waypoint (and every action on it). Bound to the Delete key. Confirmed
+// first since, unlike a single action, this also shifts every later waypoint's index down by one.
+async function deleteSelectedWaypoint() {
+  const wp = wpByIndex(state.selected);
+  if (!wp) return;
+  const idx = wp.index;
+  if (!(await confirmDialog(`Delete waypoint ${idx + 1}? This removes all of its actions too.`))) return;
+  const rec = state.mission.deleteWaypoint(idx);
+  const refresh = () => { setDirty(true); renderList(); drawWaypoints(); };
+  const selectAfterDelete = () => {
+    const remaining = state.mission.waypoints.length;
+    selectWaypoint(remaining ? Math.min(idx, remaining - 1) : -1);
+  };
+  refresh();
+  selectAfterDelete();
+  pushHistory({
+    label: `delete waypoint ${idx + 1}`,
+    undo: () => { rec.undo(); refresh(); selectWaypoint(idx); },
+    redo: () => { rec.redo(); refresh(); selectAfterDelete(); },
+  });
+  setStatus(`Deleted waypoint ${idx + 1} — Export KMZ to save.`);
 }
 
 // Best-effort friendly label for the route's aircraft/payload — from DJI's published WPML enum
@@ -2087,9 +2160,13 @@ function drawWaypoints() {
   applyRouteCameraLimits();
 }
 
-function highlightWaypoint(index) {
+function highlightWaypoint(index, opts = {}) {
   if (!cesiumOK) return;
   drawWaypoints();
+  // While placing waypoints, selecting the just-placed one should NOT relocate the camera — the
+  // operator is navigating the model freely to choose the next spot, and a camera jump on every
+  // click (snapping the FPV view to the new waypoint) fights that.
+  if (opts.skipCameraJump) return;
   if (state.fpv) { applyFpv(); return; }
   const wp = wpByIndex(index);
   if (!wp || !wp.coordinates) return;
@@ -2508,19 +2585,45 @@ function maybeSaveSession() {
 }
 
 // ---------------------------------------------------------------------------
+// Generic in-page confirm (replaces window.confirm — see index.html for why)
+// ---------------------------------------------------------------------------
+let confirmResolve = null;
+function confirmDialog(message) {
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+    $('confirm-message').textContent = message;
+    $('confirm-modal').classList.remove('hidden');
+    setTimeout(() => { const b = $('confirm-ok'); if (b) b.focus(); }, 0);
+  });
+}
+function resolveConfirm(v) {
+  $('confirm-modal').classList.add('hidden');
+  if (confirmResolve) { const r = confirmResolve; confirmResolve = null; r(v); }
+}
+
+// ---------------------------------------------------------------------------
 // Create new route
 // ---------------------------------------------------------------------------
 
 function openCreateRouteModal() {
   if (!hasModel()) { setStatus('Load a 3D model first — new waypoints are placed by clicking on it.'); return; }
+  // Camera View captures canvas pointer input for mouse-look/drag — leave it off before showing any
+  // dialog on top of the 3D view, so a lingering drag/pointer-capture can't swallow clicks meant for it.
+  if (state.fpv) { const cb = $('fpv'); cb.checked = false; cb.dispatchEvent(new Event('change')); }
   $('newroute-name').value = '';
   $('newroute-lens-wide').classList.add('active');
   $('newroute-lens-ir').classList.add('active');
   $('newroute-height').value = toDisp(20).toFixed(1);
   $('newroute-height-unit').textContent = hUnit();
   $('newroute-speed').value = '10';
+  // Blur whatever currently has focus (e.g. a dropdown item, or a stale focus target left over
+  // from a native dialog like the "Load 3D model" folder picker) before showing the modal, and
+  // defer the actual focus() a tick — calling it immediately after a native dialog closes can
+  // silently fail to move real keyboard focus even though the DOM reports the input as focused.
+  // (Confirmations in this app are an in-page dialog, not window.confirm(), for the same reason.)
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   $('newroute-modal').classList.remove('hidden');
-  $('newroute-name').focus();
+  setTimeout(() => { const inp = $('newroute-name'); if (inp) { inp.focus(); inp.select(); } }, 0);
 }
 
 async function confirmCreateRoute() {
@@ -2567,6 +2670,40 @@ function exitPlacingWaypoint() {
   if (state.mission) setStatus(`${state.mission.waypoints.length} waypoint(s) — Export KMZ to save.`);
 }
 
+// Discard the current route entirely (e.g. a "Create new route" attempt started over) — clears
+// state.mission and route-only UI, but deliberately leaves the 3D model and photos loaded so
+// "Create new route" can be used again immediately, without reopening the model.
+async function discardRoute() {
+  if (state.mission && state.mission.waypoints.length &&
+      !(await confirmDialog('Discard this route and its waypoints? The 3D model and photos stay loaded.'))) return;
+  exitPlacingWaypoint();
+  clearHistory();
+  state.mission = null;
+  state.routeName = 'route-edited';
+  state.routePath = null;
+  state.selected = -1;
+  state.dirty = false;
+  state.photoByWp = new Map();
+  state.routeBounds = null;
+  state.takeOffRefAltitude = null;
+  shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0;
+  $('shift-panel').classList.add('hidden');
+  $('route-name').value = 'route-edited';
+  $('viewer-empty').classList.remove('hidden');
+  if (cesiumOK) {
+    state.entities.points.forEach((e) => viewer.entities.remove(e));
+    state.entities.points = [];
+    if (state.entities.path) { viewer.entities.remove(state.entities.path); state.entities.path = null; }
+  }
+  renderList();
+  renderWpActions(null);
+  renderImageInfo(null);
+  renderPhotos();
+  updateFilesBadge();
+  syncCreateRouteEnabled();
+  setStatus('Route discarded — the 3D model and photos are still loaded.');
+}
+
 // Click-to-place a new waypoint against the loaded 3D model (Create new route mode).
 function handlePlacementClick(click) {
   if (!cesiumOK || !state.mission) return;
@@ -2592,24 +2729,32 @@ function handlePlacementClick(click) {
   const rec = state.mission.appendWaypoint({ coordinates: { lng, lat }, absHeight });
   const idx = rec.waypoint.index;
   const refresh = () => { setDirty(true); renderList(); drawWaypoints(); if (state.fpv) updateFpvAltReadout(); };
+  // Placing a waypoint selects it (so the list/panel reflect it), but must NOT move the camera —
+  // the operator is freely navigating the model to choose where to click next, and snapping the
+  // view (or the FPV camera) to every newly placed waypoint fights that navigation.
+  const selectQuiet = (i) => selectWaypoint(i, { skipCameraJump: true });
   refresh();
-  selectWaypoint(idx);
+  selectQuiet(idx);
   pushHistory({
     label: `place waypoint ${idx + 1}`,
     undo: () => {
       rec.undo();
       if (isFirst) { state.mission.clearTakeOffRefPoint(); state.takeOffRefAltitude = prevRefAlt; }
       refresh();
-      selectWaypoint(idx > 0 ? idx - 1 : -1);
+      selectQuiet(idx > 0 ? idx - 1 : -1);
     },
     redo: () => {
       if (isFirst) { state.mission.setTakeOffRefPoint(lat, lng, groundHeight, 0); state.takeOffRefAltitude = groundHeight; }
       rec.redo();
       refresh();
-      selectWaypoint(idx);
+      selectQuiet(idx);
     },
   });
-  setStatus(`Placed waypoint ${idx + 1} — click to add another, or Done to finish.`);
+  // Confirms explicitly that the takeoff reference is a one-time thing, set only from this first
+  // click — every later waypoint just gets placed, the reference point is never touched again.
+  setStatus(isFirst
+    ? `Placed waypoint 1 and set it as the takeoff reference point — click to add another waypoint, or Done to finish.`
+    : `Placed waypoint ${idx + 1} — click to add another, or Done to finish.`);
 }
 
 async function openSessionModal() {
@@ -2670,14 +2815,16 @@ async function openSessionModal() {
       list.appendChild(row);
     }
   };
-  section('Recent routes', 'routes', recents.routes, async (it) => {
-    const res = await window.api.loadRecentRoute(it.path);
-    if (res && !res.error) await applyRoute(res); else setStatus('Could not load route: ' + (res && res.error || 'missing'));
-  });
+  // Order matches how a mission is typically loaded: the 3D model first (so waypoints have
+  // something to sit on), then the route, then the photos it produced.
   section('Recent 3D models', 'models', recents.models, async (it) => {
     const res = await window.api.loadRecentModel(it.path);
     if (res && res.entry) { state.modelDir = res.dir || it.path; await applyModel(res); maybeSaveSession(); }
     else setStatus('Could not load 3D model from ' + it.path);
+  });
+  section('Recent routes', 'routes', recents.routes, async (it) => {
+    const res = await window.api.loadRecentRoute(it.path);
+    if (res && !res.error) await applyRoute(res); else setStatus('Could not load route: ' + (res && res.error || 'missing'));
   });
   section('Recent photo sets', 'photos', recents.photos, async (it) => {
     const res = await window.api.loadRecentPhotos(it.path);

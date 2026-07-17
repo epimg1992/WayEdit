@@ -55,6 +55,8 @@ body {
 .btn:disabled { opacity: .4; cursor: default; }
 .btn.load-all { border-color: #2c3d52; border-style: dashed; }
 .btn.active { border-color: var(--accent); color: var(--accent); }
+.btn.danger { color: #ff7a59; }
+.btn.danger:hover { background: #2a1410; border-color: #ff7a59; color: #ff9178; }
 .font-ctrl { display: flex; gap: 2px; }
 .topbar-toggle {
   display: flex; align-items: center; gap: 5px; white-space: nowrap; cursor: pointer;
@@ -224,6 +226,11 @@ td.ph { color: var(--cyan); text-align: right; }
 }
 .wp-act-body { min-width: 0; flex: 1; }
 .wp-act-name { font-family: var(--mono); font-size: 12.5px; color: var(--ink); word-break: break-all; line-height: 1.3; }
+.wp-act-delete-btn {
+  flex: none; background: transparent; border: none; color: var(--ink-dim); cursor: pointer;
+  font-size: 12px; padding: 1px 3px; border-radius: 3px; margin-top: 1px;
+}
+.wp-act-delete-btn:hover { color: var(--ir); background: var(--panel-2); }
 .wp-act-lenses { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; align-items: center; }
 .lens-badge {
   font-size: 9px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 4px; color: #07090d;
@@ -549,6 +556,10 @@ figure.thumb figcaption.cap-edit {
   display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px;
   border-top: 1px solid var(--line); flex: none;
 }
+
+/* ---- generic in-page confirm dialog ---- */
+.confirm-dialog { width: 380px; max-height: none; }
+.confirm-body { padding: 20px 18px; font-size: 13.5px; color: var(--ink); line-height: 1.55; white-space: pre-line; }
 
 /* ---- click-to-place waypoint banner ---- */
 .placing-banner {
