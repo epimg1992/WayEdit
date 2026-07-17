@@ -1,5 +1,5 @@
 'use strict';
-const { loadMission, validateRouteName } = require('../src/kmz');
+const { loadMission, createBlankMission, validateRouteName } = require('../src/kmz');
 
 const Cesium = window.Cesium;
 
@@ -8,6 +8,8 @@ const state = {
   routeName: 'route-edited',
   routePath: null,    // file path of the opened KMZ (for session saving)
   modelDir: null,     // folder path of the 3D model
+  modelLoaded: false, // a model was actually added to the scene (modelDir alone just means a folder was picked)
+  placingWaypoint: false, // "Create new route" click-to-place mode is active
   photosDir: null,    // folder path of mission photos
   photosDirCreatedAt: null,
   photosFolderName: null,
@@ -142,8 +144,9 @@ function initCesium() {
   viewer.scene.logarithmicDepthBuffer = true; // avoids z-fighting at site scale
   viewer.resolutionScale = Math.min(window.devicePixelRatio || 1, 2);
 
-  // Click-to-select waypoints
+  // Click-to-select waypoints (or, in "Create new route" placement mode, click-to-place one).
   viewer.screenSpaceEventHandler.setInputAction((click) => {
+    if (state.placingWaypoint) { handlePlacementClick(click); return; }
     const picked = viewer.scene.pick(click.position);
     if (picked && picked.id && typeof picked.id.wpIndex === 'number') {
       selectWaypoint(picked.id.wpIndex);
@@ -274,8 +277,10 @@ function wireUi() {
   $('btn-shift').onclick = openShiftPanel;
   $('btn-export').onclick = exportKmz;
   $('btn-reset').onclick = resetSession;
+  $('btn-new-route').onclick = openCreateRouteModal;
   initShiftPanel();
   updateFilesBadge();
+  syncCreateRouteEnabled();
 
   // Add-action bar (Photo actions panel): insert a new action onto the selected waypoint.
   document.querySelectorAll('.add-act-btn').forEach((btn) => {
@@ -461,6 +466,23 @@ function wireUi() {
   $('session-modal-close').onclick = () => $('session-modal').classList.add('hidden');
   $('session-modal').onclick = (e) => { if (e.target.id === 'session-modal') $('session-modal').classList.add('hidden'); };
 
+  // Create new route modal
+  const closeNewRoute = () => $('newroute-modal').classList.add('hidden');
+  $('newroute-modal-close').onclick = closeNewRoute;
+  $('newroute-cancel').onclick = closeNewRoute;
+  $('newroute-modal').onclick = (e) => { if (e.target.id === 'newroute-modal') closeNewRoute(); };
+  $('newroute-create').onclick = confirmCreateRoute;
+  ['newroute-lens-wide', 'newroute-lens-ir'].forEach((id) => {
+    $(id).onclick = () => {
+      const wide = $('newroute-lens-wide'), ir = $('newroute-lens-ir');
+      const btn = $(id);
+      // At least one of Visible/IR must stay selected.
+      if (btn.classList.contains('active') && (id === 'newroute-lens-wide' ? !ir.classList.contains('active') : !wide.classList.contains('active'))) return;
+      btn.classList.toggle('active');
+    };
+  });
+  $('placing-done').onclick = exitPlacingWaypoint;
+
   // Column resize handles
   initColResize();
 
@@ -504,6 +526,7 @@ function wireUi() {
   // Global keyboard: Esc for lightbox, FPV movement keys
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !$('lightbox').classList.contains('hidden')) { closeLightbox(); return; }
+    if (e.key === 'Escape' && state.placingWaypoint) { exitPlacingWaypoint(); return; }
     // Shift+F toggles Camera view (FPV).
     if (e.shiftKey && (e.key === 'F' || e.key === 'f') && !isInputFocused()) {
       e.preventDefault();
@@ -1144,11 +1167,15 @@ function resetSession() {
   state.photoByWp = new Map();
   state.imageryLayer = null;
   state.tileset = null;
+  state.modelLoaded = false;
+  state.placingWaypoint = false;
   state.fpv = false;
   state.routeBounds = null;
   state.takeOffRefAltitude = null;
   state.stripFilter = null;
   updateFilesBadge();
+  syncCreateRouteEnabled();
+  exitPlacingWaypoint();
 
   // Reset all UI controls to their initial state
   $('route-name').value = 'route-edited';
@@ -2404,6 +2431,7 @@ async function applyModel(res) {
       state.tileset = tileset;
       viewer.scene.primitives.add(tileset);
       await viewer.zoomTo(tileset);
+      state.modelLoaded = true;
       setStatus('3D Tiles model loaded at full detail. Waypoints sit at their true height over it.');
     } else {
       const wp0 = state.mission && state.mission.waypoints[0] && state.mission.waypoints[0].coordinates;
@@ -2415,12 +2443,22 @@ async function applyModel(res) {
         modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(origin),
       });
       viewer.scene.primitives.add(model);
+      state.modelLoaded = true;
       setStatus(`Mesh model loaded (${res.kind}). It is georeferenced to waypoint 0.`);
     }
   } catch (e) {
     setStatus('Could not load model: ' + e.message);
   }
   updateFilesBadge();
+  syncCreateRouteEnabled();
+}
+
+// "Create new route" needs a model to click on — state.modelDir alone just means a folder was picked,
+// not that a model actually loaded into the scene (see applyModel's early-return branch above).
+function hasModel() { return state.modelLoaded; }
+function syncCreateRouteEnabled() {
+  const btn = $('btn-new-route');
+  if (btn) btn.disabled = !hasModel();
 }
 
 // ---------------------------------------------------------------------------
@@ -2467,6 +2505,111 @@ function maybeSaveSession() {
     photosFolderName: state.photosFolderName,
     photosDirCreatedAt: state.photosDirCreatedAt,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Create new route
+// ---------------------------------------------------------------------------
+
+function openCreateRouteModal() {
+  if (!hasModel()) { setStatus('Load a 3D model first — new waypoints are placed by clicking on it.'); return; }
+  $('newroute-name').value = '';
+  $('newroute-lens-wide').classList.add('active');
+  $('newroute-lens-ir').classList.add('active');
+  $('newroute-height').value = toDisp(20).toFixed(1);
+  $('newroute-height-unit').textContent = hUnit();
+  $('newroute-speed').value = '10';
+  $('newroute-modal').classList.remove('hidden');
+  $('newroute-name').focus();
+}
+
+async function confirmCreateRoute() {
+  const name = $('newroute-name').value.trim();
+  const v = validateRouteName(name);
+  if (!v.ok) { setStatus(v.message || 'Enter a route name.'); return; }
+  const imageFormat = [];
+  if ($('newroute-lens-wide').classList.contains('active')) imageFormat.push('wide');
+  if ($('newroute-lens-ir').classList.contains('active')) imageFormat.push('ir');
+  const globalHeight = fromDisp(parseFloat($('newroute-height').value) || 20);
+  const autoFlightSpeed = parseFloat($('newroute-speed').value) || 10;
+
+  const blank = createBlankMission({ globalHeight, autoFlightSpeed, imageFormat });
+  const buf = await blank.toBuffer('browser');
+  await applyRoute({ buffer: buf, name, path: null });
+  // applyRoute appends "-edited" (meant for an opened existing route) — a brand-new route has
+  // nothing to be "edited" from, so restore the clean typed name.
+  state.routeName = name;
+  $('route-name').value = name;
+  state.aircraftIrOverride = imageFormat.includes('ir');
+  renderCameraSettingsRow();
+  // applyRoute's height-mode auto-detect looks at the tallest waypoint height to guess ALT vs.
+  // Absolute — on a brand-new route that has zero waypoints yet, that heuristic always sees 0 and
+  // wrongly guesses ALT. A new route's heights are unambiguous (real absolute ellipsoid heights,
+  // taken directly off the clicked model surface), so force Absolute explicitly.
+  $('height-mode').value = 'absolute';
+  applyHeightMode();
+  $('newroute-modal').classList.add('hidden');
+  enterPlacingWaypoint();
+  setStatus(`Created "${name}" — click the 3D model to place waypoints.`);
+}
+
+function enterPlacingWaypoint() {
+  if (!cesiumOK) return;
+  state.placingWaypoint = true;
+  $('placing-banner').classList.remove('hidden');
+  viewer.canvas.style.cursor = 'crosshair';
+}
+
+function exitPlacingWaypoint() {
+  state.placingWaypoint = false;
+  $('placing-banner').classList.add('hidden');
+  if (cesiumOK) viewer.canvas.style.cursor = '';
+  if (state.mission) setStatus(`${state.mission.waypoints.length} waypoint(s) — Export KMZ to save.`);
+}
+
+// Click-to-place a new waypoint against the loaded 3D model (Create new route mode).
+function handlePlacementClick(click) {
+  if (!cesiumOK || !state.mission) return;
+  const picked = viewer.scene.pickPosition(click.position);
+  if (!Cesium.defined(picked)) { setStatus('Click on the 3D model to place a waypoint.'); return; }
+  const carto = Cesium.Cartographic.fromCartesian(picked);
+  const lng = Cesium.Math.toDegrees(carto.longitude);
+  const lat = Cesium.Math.toDegrees(carto.latitude);
+  const groundHeight = carto.height;
+  const globalHeight = parseFloat(state.mission.globals().globalHeight) || 20;
+  const absHeight = groundHeight + globalHeight;
+
+  // The FIRST waypoint placed is also the launch point — set it as the mission's takeoff reference
+  // so AGL readouts (here and in FlightHub) are meaningful from the start, not just the raw absolute
+  // height. Folded into the same undo/redo entry as placing the waypoint itself.
+  const isFirst = state.mission.waypoints.length === 0;
+  const prevRefAlt = state.takeOffRefAltitude;
+  if (isFirst) {
+    state.mission.setTakeOffRefPoint(lat, lng, groundHeight, 0);
+    state.takeOffRefAltitude = groundHeight;
+  }
+
+  const rec = state.mission.appendWaypoint({ coordinates: { lng, lat }, absHeight });
+  const idx = rec.waypoint.index;
+  const refresh = () => { setDirty(true); renderList(); drawWaypoints(); if (state.fpv) updateFpvAltReadout(); };
+  refresh();
+  selectWaypoint(idx);
+  pushHistory({
+    label: `place waypoint ${idx + 1}`,
+    undo: () => {
+      rec.undo();
+      if (isFirst) { state.mission.clearTakeOffRefPoint(); state.takeOffRefAltitude = prevRefAlt; }
+      refresh();
+      selectWaypoint(idx > 0 ? idx - 1 : -1);
+    },
+    redo: () => {
+      if (isFirst) { state.mission.setTakeOffRefPoint(lat, lng, groundHeight, 0); state.takeOffRefAltitude = groundHeight; }
+      rec.redo();
+      refresh();
+      selectWaypoint(idx);
+    },
+  });
+  setStatus(`Placed waypoint ${idx + 1} — click to add another, or Done to finish.`);
 }
 
 async function openSessionModal() {

@@ -41,6 +41,8 @@
           <button class="dropdown-item" id="btn-photos">Load mission photos</button>
           <div class="dropdown-divider"></div>
           <button class="dropdown-item load-all-item" id="btn-load-all">Load all…</button>
+          <div class="dropdown-divider"></div>
+          <button class="dropdown-item" id="btn-new-route" disabled title="Load a 3D model first — new waypoints are placed by clicking on it">Create new route…</button>
         </div>
       </div>
 
@@ -111,6 +113,11 @@
     <!-- Center: 3D viewer -->
     <section class="viewer-pane">
       <div id="viewer"></div>
+      <!-- Create-new-route click-to-place banner -->
+      <div id="placing-banner" class="placing-banner hidden">
+        <span>Click the 3D model to place a waypoint</span>
+        <button class="btn" id="placing-done">Done (Esc)</button>
+      </div>
       <!-- FPV camera overlay: lens bar, zoom/IR boxes, heading -->
       <div id="fpv-overlay" class="fpv-overlay hidden">
         <div id="fpv-lens-bar" class="fpv-lens-bar"></div>
@@ -324,6 +331,50 @@
       </div>
       <div id="session-list" class="session-list">
         <div class="session-empty">No saved sessions yet. Load a route, model, and photos to create one.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create new route modal -->
+  <div id="newroute-modal" class="session-modal hidden">
+    <div class="session-dialog newroute-dialog">
+      <div class="session-header">
+        <span>Create new route</span>
+        <button id="newroute-modal-close" class="session-close-btn">✕</button>
+      </div>
+      <div class="newroute-body">
+        <label class="newroute-field">
+          <span class="newroute-label">Route name</span>
+          <input type="text" id="newroute-name" class="newroute-input" placeholder="new-route" autocomplete="off" />
+        </label>
+        <div class="newroute-field">
+          <span class="newroute-label">Camera</span>
+          <div class="newroute-lens-row">
+            <button type="button" class="lens-pill wide active" id="newroute-lens-wide" data-lens="wide">VISIBLE</button>
+            <button type="button" class="lens-pill ir active" id="newroute-lens-ir" data-lens="ir">IR</button>
+          </div>
+        </div>
+        <div class="newroute-row2">
+          <label class="newroute-field">
+            <span class="newroute-label">Default height (AGL)</span>
+            <div class="newroute-input-unit">
+              <input type="text" inputmode="decimal" id="newroute-height" class="newroute-input" value="20" />
+              <span class="newroute-unit" id="newroute-height-unit">m</span>
+            </div>
+          </label>
+          <label class="newroute-field">
+            <span class="newroute-label">Default speed</span>
+            <div class="newroute-input-unit">
+              <input type="text" inputmode="decimal" id="newroute-speed" class="newroute-input" value="10" />
+              <span class="newroute-unit">m/s</span>
+            </div>
+          </label>
+        </div>
+        <p class="newroute-hint">After creating, click points on the 3D model to place waypoints in order. Add photo actions afterward, the same way as on any other route.</p>
+      </div>
+      <div class="newroute-footer">
+        <button class="btn" id="newroute-cancel">Cancel</button>
+        <button class="btn primary" id="newroute-create">Create &amp; start placing waypoints</button>
       </div>
     </div>
   </div>

@@ -3,7 +3,7 @@
  */
 const assert = require('assert');
 const JSZip = require('jszip');
-const { loadMission, validateRouteName } = require('../src/kmz');
+const { loadMission, createBlankMission, validateRouteName } = require('../src/kmz');
 
 function placemark(index, lng, lat, height, focal, lenses, heightTag) {
   return `
@@ -376,5 +376,84 @@ async function buildOsSampleKmz() {
   console.log(`  All ${pass} round-2 engine checks passed ✓`);
 })().catch((e) => {
   console.error('\n  TEST FAILED (round 2):', e.message);
+  process.exit(1);
+});
+
+// ---------------------------------------------------------------------------
+// Round 3: Create New Route — createBlankMission + Mission.appendWaypoint
+// ---------------------------------------------------------------------------
+
+(async () => {
+  let pass = 0;
+
+  // 1. A blank mission has zero waypoints but valid globals/globalLenses.
+  const m = createBlankMission({ globalHeight: 25, autoFlightSpeed: 12, imageFormat: ['wide', 'ir'] });
+  assert.strictEqual(m.waypoints.length, 0, 'blank mission starts with zero waypoints');
+  const g0 = m.globals();
+  assert.strictEqual(g0.globalHeight, '25');
+  assert.strictEqual(g0.autoFlightSpeed, '12');
+  assert.strictEqual(g0.droneEnumValue, '100');
+  assert.deepStrictEqual(m.globalLenses, ['wide', 'ir']);
+  pass++;
+
+  // 2. appendWaypoint × 3 — sequential indices, explicit (non-useGlobal) fields.
+  const recs = [];
+  recs.push(m.appendWaypoint({ coordinates: { lng: -102.10, lat: 31.98 }, absHeight: 845 }));
+  recs.push(m.appendWaypoint({ coordinates: { lng: -102.11, lat: 31.97 }, absHeight: 846 }));
+  recs.push(m.appendWaypoint({ coordinates: { lng: -102.12, lat: 31.96 }, absHeight: 847, aglHeight: 30 }));
+  assert.strictEqual(m.waypoints.length, 3, 'three waypoints appended');
+  assert.deepStrictEqual(m.waypoints.map((w) => w.index), [0, 1, 2], 'sequential indices');
+  assert.strictEqual(m.waypoints[0].height, 845);
+  assert.strictEqual(m.waypoints[0].aglHeight, 25, 'defaults aglHeight from the mission globalHeight');
+  assert.strictEqual(m.waypoints[2].aglHeight, 30, 'explicit aglHeight overrides the default');
+  assert.strictEqual(m.waypoints[0].speed, 12, 'defaults speed from the mission autoFlightSpeed');
+  pass++;
+
+  // 3. Round-trip through toBuffer/loadMission preserves everything, including a photo action added
+  // afterward via the ordinary addAction path (confirms _reachPointGroup's lazy-create still works on
+  // an appendWaypoint-built placemark with no actionGroup at all).
+  m.waypoints[1].addAction('takePhotoFixed', { heading: 0, pitch: -90, focal: 24, lens: 'visable,ir', useGlobalLens: 0 });
+  const buf = await m.toBuffer('node');
+  const m2 = await loadMission(buf);
+  assert.strictEqual(m2.waypoints.length, 3, 'waypoint count survives round trip');
+  assert.strictEqual(m2.waypoints[0].height, 845);
+  assert.strictEqual(m2.waypoints[2].aglHeight, 30);
+  assert.ok(m2.waypoints[1].hasPhotoAction, 'action added post-append survives round trip');
+  const rawZip = await JSZip.loadAsync(buf);
+  const tplTxt = await rawZip.file('wpmz/template.kml').async('string');
+  assert.ok(tplTxt.includes('<wpml:useGlobalHeight>0</wpml:useGlobalHeight>'), 'explicit height flag written');
+  assert.ok(tplTxt.includes('<wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>'), 'explicit speed flag written');
+  assert.ok(tplTxt.includes('<wpml:payloadParam>'), 'trailing payloadParam preserved after appended placemarks');
+  pass++;
+
+  // 4. undo/redo remove and restore the last-appended waypoint without disturbing the others.
+  const last = recs[2];
+  last.undo();
+  assert.strictEqual(m.waypoints.length, 2, 'undo removes the last-appended waypoint');
+  assert.strictEqual(m.waypoints[0].height, 845, 'earlier waypoint untouched by undo');
+  last.redo();
+  assert.strictEqual(m.waypoints.length, 3, 'redo restores the waypoint');
+  assert.strictEqual(m.waypoints[2].aglHeight, 30, 'restored waypoint keeps its original data');
+  pass++;
+
+  // 5. Takeoff reference point: once set, appendWaypoint's default AGL is computed relative to it
+  // (matching FlightHub's convention — one takeoff point for the whole mission, not per-waypoint
+  // local ground) instead of just echoing the mission's configured globalHeight for every waypoint.
+  const m3 = createBlankMission({ globalHeight: 20 });
+  assert.strictEqual(m3.globals().takeOffRefAltitude, undefined, 'no takeoff ref point on a blank mission');
+  m3.setTakeOffRefPoint(31.9800, -102.1000, 800, 0);
+  assert.strictEqual(m3.globals().takeOffRefAltitude, 800);
+  const wpA = m3.appendWaypoint({ coordinates: { lng: -102.10, lat: 31.98 }, absHeight: 820 }).waypoint;
+  assert.strictEqual(wpA.aglHeight, 20, 'AGL computed from absHeight - takeOffRefAltitude');
+  // A waypoint over higher ground gets a different AGL relative to the SAME takeoff point.
+  const wpB = m3.appendWaypoint({ coordinates: { lng: -102.11, lat: 31.97 }, absHeight: 845 }).waypoint;
+  assert.strictEqual(wpB.aglHeight, 45, 'AGL reflects height above the takeoff point, not local ground');
+  m3.clearTakeOffRefPoint();
+  assert.strictEqual(m3.globals().takeOffRefAltitude, undefined, 'clearTakeOffRefPoint removes it');
+  pass++;
+
+  console.log(`  All ${pass} round-3 (create-new-route) engine checks passed ✓`);
+})().catch((e) => {
+  console.error('\n  TEST FAILED (round 3):', e.message);
   process.exit(1);
 });

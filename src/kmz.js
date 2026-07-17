@@ -239,6 +239,29 @@ class Mission {
     return out;
   }
 
+  // Set the mission's takeoff reference point — the ground the aircraft launches from — as
+  // wpml:takeOffRefPoint ("lat,lng,ellipsoidAltitude") + wpml:takeOffRefPointAGLHeight, template.kml
+  // only (matches real FlightHub-exported routes: waylines.wpml's missionConfig never carries this).
+  // Everything that reports a waypoint's AGL height (Waypoint.aglHeight, FlightHub's own ALT readout)
+  // is relative to this point — a route built from scratch has none until this is set.
+  setTakeOffRefPoint(lat, lng, groundAlt, aglHeight = 0) {
+    const doc = this.templateDoc;
+    if (!doc) return;
+    const cfg = descendants(doc, 'wpml:missionConfig')[0];
+    if (!cfg) return;
+    setChildText(doc, cfg, 'wpml:takeOffRefPoint',
+      lat.toFixed(9) + ',' + lng.toFixed(9) + ',' + groundAlt.toFixed(4));
+    setChildText(doc, cfg, 'wpml:takeOffRefPointAGLHeight', aglHeight);
+  }
+  clearTakeOffRefPoint() {
+    const doc = this.templateDoc;
+    if (!doc) return;
+    const cfg = descendants(doc, 'wpml:missionConfig')[0];
+    if (!cfg) return;
+    removeChild(cfg, 'wpml:takeOffRefPoint');
+    removeChild(cfg, 'wpml:takeOffRefPointAGLHeight');
+  }
+
   // Route-wide default Visible/IR/zoom lens set — Folder > wpml:payloadParam > wpml:imageFormat in
   // template.kml (waylines.wpml has no payloadParam). This is what a shot with
   // useGlobalPayloadLensIndex=1 ("Follow Route") actually resolves to. Verified against a real
@@ -426,6 +449,86 @@ class Mission {
       if (clonedTpl && clonedTpl.parentNode) clonedTpl.parentNode.removeChild(clonedTpl);
       if (clonedWl && clonedWl.parentNode) clonedWl.parentNode.removeChild(clonedWl);
       shiftAffected(-1);
+      this._index();
+    };
+
+    attach();
+    const newWp = this.waypoints.find((w) => w.index === newIndex);
+    return { waypoint: newWp, undo: detach, redo: attach };
+  }
+
+  // Append a brand-new waypoint to the END of the route — used by "Create new route," where there is
+  // no existing waypoint for insertWaypointAfter to clone from (it throws if this.waypoints is empty).
+  // No renumbering is ever needed since this always adds after the last waypoint.
+  //
+  // Deliberately writes EXPLICIT height/speed/heading/turn values (useGlobalHeight/useGlobalSpeed/
+  // useGlobalHeadingParam/useGlobalTurnParam all 0) instead of deferring to the mission's global
+  // settings the way FlightHub itself defaults a new waypoint. kmz.js's own editors only ever clear
+  // useGlobalHeight (_useOwnHeight) — nothing clears the other three — so a waypoint that started with
+  // them at 1 would risk the exact same "edit silently ignored" bug fixed for height, the moment the
+  // operator edited its speed or heading.
+  //
+  // pos = { coordinates: {lng, lat}, absHeight, aglHeight }. If aglHeight is omitted, it's computed
+  // from the mission's takeoff reference point (absHeight − takeOffRefAltitude) when one is set —
+  // matching FlightHub's own AGL convention (relative to ONE takeoff point for the whole mission, not
+  // each waypoint's local ground) — else falls back to the mission's configured globalHeight. No
+  // actionGroup is created — _reachPointGroup already builds one lazily the first time addAction is
+  // called, so an action-less waypoint needs none.
+  appendWaypoint(pos, opts = {}) {
+    const { coordinates, absHeight } = pos;
+    const refAlt = this.globals().takeOffRefAltitude;
+    const aglHeight = pos.aglHeight != null
+      ? pos.aglHeight
+      : (refAlt != null ? absHeight - refAlt : parseFloat(this.globals().globalHeight || '0'));
+    const speed = opts.speed != null ? opts.speed : parseFloat(this.globals().autoFlightSpeed || '10');
+    const newIndex = this.waypoints.length;
+
+    const placemarkXml = (isWl) => `<Placemark xmlns:wpml="${WPML_NS}">`
+      + `<Point><coordinates>${coordinates.lng.toFixed(9)},${coordinates.lat.toFixed(9)}</coordinates></Point>`
+      + `<wpml:index>${newIndex}</wpml:index>`
+      + (isWl
+        ? `<wpml:executeHeight>${absHeight}</wpml:executeHeight>`
+        : `<wpml:ellipsoidHeight>${absHeight}</wpml:ellipsoidHeight><wpml:height>${aglHeight}</wpml:height>`)
+      + '<wpml:useGlobalHeight>0</wpml:useGlobalHeight>'
+      + `<wpml:waypointSpeed>${speed}</wpml:waypointSpeed>`
+      + '<wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>'
+      + '<wpml:waypointHeadingParam><wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>'
+      + '<wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>'
+      + '<wpml:waypointHeadingAngleEnable>0</wpml:waypointHeadingAngleEnable></wpml:waypointHeadingParam>'
+      + '<wpml:useGlobalHeadingParam>0</wpml:useGlobalHeadingParam>'
+      + '<wpml:waypointTurnParam><wpml:waypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:waypointTurnMode>'
+      + '<wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist></wpml:waypointTurnParam>'
+      + '<wpml:useGlobalTurnParam>0</wpml:useGlobalTurnParam>'
+      + '<wpml:useStraightLine>1</wpml:useStraightLine>'
+      + '<wpml:isRisky>0</wpml:isRisky>'
+      + '</Placemark>';
+
+    // template.kml's Folder ends with a payloadParam block (see createBlankMission / real exported
+    // routes) — new placemarks must land BEFORE it, not after.
+    const insertInFolder = (doc, el) => {
+      const folder = descendants(doc, 'Folder')[0];
+      if (!folder) return;
+      const before = firstChildEl(folder, 'wpml:payloadParam');
+      if (before) folder.insertBefore(el, before); else folder.appendChild(el);
+    };
+    const buildNode = (doc, isWl) => {
+      if (!doc) return null;
+      let el = new DOMParser().parseFromString(placemarkXml(isWl), 'text/xml').documentElement;
+      el.removeAttribute('xmlns:wpml');
+      if (doc.importNode) el = doc.importNode(el, true);
+      return el;
+    };
+
+    const newTpl = buildNode(this.templateDoc, false);
+    const newWl = buildNode(this.waylinesDoc, true);
+    const attach = () => {
+      if (newTpl) insertInFolder(this.templateDoc, newTpl);
+      if (newWl) insertInFolder(this.waylinesDoc, newWl);
+      this._index();
+    };
+    const detach = () => {
+      if (newTpl && newTpl.parentNode) newTpl.parentNode.removeChild(newTpl);
+      if (newWl && newWl.parentNode) newWl.parentNode.removeChild(newWl);
       this._index();
     };
 
@@ -1038,6 +1141,90 @@ class Waypoint {
 }
 
 // ---------------------------------------------------------------------------
+// Create a brand-new, empty mission (Route View's "Create new route")
+// ---------------------------------------------------------------------------
+
+// Build a valid, minimal template.kml + waylines.wpml pair with zero waypoints, matching the shape
+// of real FlightHub-exported routes (see test/kmz.test.js's osDoc/osPlacemark fixtures) and DJI's
+// documented required fields (missionConfig, Folder, waylineCoordinateSysParam). Waypoints are added
+// afterward via Mission.appendWaypoint — this only creates the empty shell.
+function createBlankMission(opts = {}) {
+  const droneEnumValue = opts.droneEnumValue != null ? opts.droneEnumValue : 100;
+  const droneSubEnumValue = opts.droneSubEnumValue != null ? opts.droneSubEnumValue : 1;
+  const payloadEnumValue = opts.payloadEnumValue != null ? opts.payloadEnumValue : 99;
+  const payloadSubEnumValue = opts.payloadSubEnumValue != null ? opts.payloadSubEnumValue : 2;
+  const autoFlightSpeed = opts.autoFlightSpeed != null ? opts.autoFlightSpeed : 10;
+  const globalHeight = opts.globalHeight != null ? opts.globalHeight : 20;
+  const imageFormat = (opts.imageFormat && opts.imageFormat.length ? opts.imageFormat : ['wide', 'ir'])
+    .map(rawLensToken).join(',');
+
+  const missionConfig = (isWl) => `<wpml:missionConfig>`
+    + '<wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>'
+    + '<wpml:finishAction>goHome</wpml:finishAction>'
+    + '<wpml:exitOnRCLost>goContinue</wpml:exitOnRCLost>'
+    + '<wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>'
+    + '<wpml:takeOffSecurityHeight>20</wpml:takeOffSecurityHeight>'
+    + '<wpml:globalTransitionalSpeed>15</wpml:globalTransitionalSpeed>'
+    + (isWl ? '<wpml:globalRTHHeight>100</wpml:globalRTHHeight>' : '')
+    + `<wpml:droneInfo><wpml:droneEnumValue>${droneEnumValue}</wpml:droneEnumValue>`
+    + `<wpml:droneSubEnumValue>${droneSubEnumValue}</wpml:droneSubEnumValue></wpml:droneInfo>`
+    + '<wpml:waylineAvoidLimitAreaMode>0</wpml:waylineAvoidLimitAreaMode>'
+    + `<wpml:payloadInfo><wpml:payloadEnumValue>${payloadEnumValue}</wpml:payloadEnumValue>`
+    + `<wpml:payloadSubEnumValue>${payloadSubEnumValue}</wpml:payloadSubEnumValue>`
+    + '<wpml:payloadPositionIndex>0</wpml:payloadPositionIndex></wpml:payloadInfo>'
+    + '</wpml:missionConfig>';
+
+  const templateXml = '<?xml version="1.0" encoding="UTF-8"?>'
+    + `<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${WPML_NS}"><Document>`
+    + missionConfig(false)
+    + '<Folder>'
+    + '<wpml:templateType>waypoint</wpml:templateType>'
+    + '<wpml:templateId>0</wpml:templateId>'
+    + '<wpml:waylineCoordinateSysParam><wpml:coordinateMode>WGS84</wpml:coordinateMode>'
+    + '<wpml:heightMode>aboveGroundLevel</wpml:heightMode></wpml:waylineCoordinateSysParam>'
+    + `<wpml:autoFlightSpeed>${autoFlightSpeed}</wpml:autoFlightSpeed>`
+    + `<wpml:globalHeight>${globalHeight}</wpml:globalHeight>`
+    + '<wpml:caliFlightEnable>0</wpml:caliFlightEnable>'
+    + '<wpml:gimbalPitchMode>manual</wpml:gimbalPitchMode>'
+    + '<wpml:globalWaypointHeadingParam><wpml:waypointHeadingMode>followWayline</wpml:waypointHeadingMode>'
+    + '<wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>'
+    + '<wpml:waypointPoiPoint>0.000000,0.000000,0.000000</wpml:waypointPoiPoint>'
+    + '<wpml:waypointHeadingPathMode>followBadArc</wpml:waypointHeadingPathMode>'
+    + '<wpml:waypointHeadingPoiIndex>0</wpml:waypointHeadingPoiIndex></wpml:globalWaypointHeadingParam>'
+    + '<wpml:globalWaypointTurnMode>toPointAndStopWithDiscontinuityCurvature</wpml:globalWaypointTurnMode>'
+    + '<wpml:globalUseStraightLine>1</wpml:globalUseStraightLine>'
+    + '<wpml:payloadParam><wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>'
+    + '<wpml:focusMode>firstPoint</wpml:focusMode><wpml:meteringMode>average</wpml:meteringMode>'
+    + '<wpml:returnMode>singleReturnStrongest</wpml:returnMode><wpml:samplingRate>240000</wpml:samplingRate>'
+    + '<wpml:scanningMode>repetitive</wpml:scanningMode>'
+    + `<wpml:imageFormat>${imageFormat}</wpml:imageFormat><wpml:photoSize>default_l</wpml:photoSize></wpml:payloadParam>`
+    + '</Folder></Document></kml>';
+
+  const waylinesXml = '<?xml version="1.0" encoding="UTF-8"?>'
+    + `<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="${WPML_NS}"><Document>`
+    + missionConfig(true)
+    + '<Folder>'
+    + '<wpml:templateId>0</wpml:templateId>'
+    + '<wpml:executeHeightMode>WGS84</wpml:executeHeightMode>'
+    + '<wpml:waylineId>0</wpml:waylineId>'
+    + '<wpml:distance>0</wpml:distance><wpml:duration>0</wpml:duration>'
+    + `<wpml:autoFlightSpeed>${autoFlightSpeed}</wpml:autoFlightSpeed>`
+    + '<wpml:realTimeFollowSurfaceByFov>0</wpml:realTimeFollowSurfaceByFov>'
+    + '</Folder></Document></kml>';
+
+  const parser = new DOMParser();
+  const templateDoc = parser.parseFromString(templateXml, 'text/xml');
+  const waylinesDoc = parser.parseFromString(waylinesXml, 'text/xml');
+  const enc = new TextEncoder();
+  const paths = { template: 'wpmz/template.kml', waylines: 'wpmz/waylines.wpml', prefix: 'wpmz/' };
+  const entries = {
+    [paths.template]: enc.encode(templateXml),
+    [paths.waylines]: enc.encode(waylinesXml),
+  };
+  return new Mission(null, entries, templateDoc, waylinesDoc, paths);
+}
+
+// ---------------------------------------------------------------------------
 // Load / validate
 // ---------------------------------------------------------------------------
 
@@ -1091,6 +1278,7 @@ function validateRouteName(name) {
 
 module.exports = {
   loadMission,
+  createBlankMission,
   validateRouteName,
   Mission,
   Waypoint,
