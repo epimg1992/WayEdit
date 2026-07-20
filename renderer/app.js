@@ -19,6 +19,7 @@ const state = {
   photoByWp: new Map(), // wpIndex -> [photo]
   entities: { points: [], lines: [], path: null, heading: null },
   imageryLayer: null,
+  labelsLayer: null,   // "hybrid" overlay: place names, roads, borders on top of the satellite imagery
   tileset: null,
   fpv: false,
   routeBounds: null,   // { lat, lng, h, radius } computed from waypoints
@@ -143,6 +144,8 @@ function initCesium() {
   viewer.scene.globe.tileCacheSize = 1000;
   viewer.scene.logarithmicDepthBuffer = true; // avoids z-fighting at site scale
   viewer.resolutionScale = Math.min(window.devicePixelRatio || 1, 2);
+  enableDefaultImagery(); // show a normal-looking map (like Google Maps) until a 3D model is loaded
+  enableRealTerrain(); // real ground elevation, so the map isn't a flat plane the 3D model floats above
 
   // Click-to-select waypoints (or, in "Create new route" placement mode, click-to-place one).
   viewer.screenSpaceEventHandler.setInputAction((click) => {
@@ -437,6 +440,7 @@ function wireUi() {
   $('height-unit').onclick = () => setHeightUnit(state.heightUnit === 'm' ? 'ft' : 'm');
 
   $('imagery').onchange = toggleImagery;
+  $('imagery-labels').onchange = toggleImageryLabels;
   $('fpv').onchange = (e) => {
     state.fpv = e.target.checked;
     $('fpv-keys-toggle').classList.toggle('hidden', !state.fpv);
@@ -1157,6 +1161,7 @@ async function resetSession() {
     state.entities.heading = null;
     if (state.tileset) { try { viewer.scene.primitives.remove(state.tileset); } catch {} }
     if (state.imageryLayer) { try { viewer.imageryLayers.remove(state.imageryLayer); } catch {} }
+    if (state.labelsLayer) { try { viewer.imageryLayers.remove(state.labelsLayer); } catch {} }
     viewer.camera.frustum.fov = Cesium.Math.toRadians(60);
     setFpvMouseMode(false); // restore map mouse controls + cursor
   }
@@ -1174,6 +1179,7 @@ async function resetSession() {
   state.photos = [];
   state.photoByWp = new Map();
   state.imageryLayer = null;
+  state.labelsLayer = null;
   state.tileset = null;
   state.modelLoaded = false;
   state.placingWaypoint = false;
@@ -1188,7 +1194,7 @@ async function resetSession() {
   // Reset all UI controls to their initial state
   $('route-name').value = 'route-edited';
   const fpvCb = $('fpv'); if (fpvCb) fpvCb.checked = false;
-  const imgCb = $('imagery'); if (imgCb) imgCb.checked = false;
+  if (cesiumOK) enableDefaultImagery(); // back to the plain-map default until a model is loaded again
   $('fpv-hint').classList.add('hidden');
   $('fpv-alt').classList.add('hidden');
   $('fpv-aim').classList.add('hidden');
@@ -2463,19 +2469,92 @@ function fitView() {
   viewer.flyTo(state.entities.points, { duration: 0.8 }).catch(() => {});
 }
 
+// Real ground elevation for the bare globe (Esri's public elevation service — no API key, same as
+// the imagery layers above). Without this the globe is a flat WGS84 ellipsoid at 0 m everywhere,
+// while a loaded 3D model sits at its true elevation (often several hundred metres) — the model
+// then visually "floats" above the map instead of sitting on it. Applied once, at boot, regardless
+// of the imagery/labels toggles — it's what makes the ground surface itself sit at the right
+// height, not just what's drawn on it. Silently keeps the flat ellipsoid without a network.
+function enableRealTerrain() {
+  if (!cesiumOK) return;
+  Cesium.ArcGISTiledElevationTerrainProvider.fromUrl(
+    'https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer'
+  ).then((terrainProvider) => { if (cesiumOK) viewer.terrainProvider = terrainProvider; }).catch(() => {});
+}
+
+// Online satellite imagery — ArcGIS World Imagery, draped on the bare globe so it reads like an
+// ordinary map (Google Maps-style) before the (large, offline) site 3D model is loaded, or any
+// time the model isn't loaded. Silently does nothing without a network connection.
+function addImageryLayer() {
+  if (!cesiumOK || state.imageryLayer) return;
+  try {
+    const provider = new Cesium.UrlTemplateImageryProvider({
+      url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      maximumLevel: 21,
+    });
+    state.imageryLayer = viewer.imageryLayers.addImageryProvider(provider);
+    return true;
+  } catch { return false; }
+}
+// "Hybrid" overlay — ArcGIS's reference layer of place names, roads, and borders, drawn (as
+// transparent tiles) on top of the satellite imagery above. Added after the base imagery layer so
+// it renders above it in the imagery stack.
+function addLabelsLayer() {
+  if (!cesiumOK || state.labelsLayer) return;
+  try {
+    const provider = new Cesium.UrlTemplateImageryProvider({
+      url: 'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+      // Real tiles are 256x256, but the text/labels baked into them read tiny until zoomed in
+      // fairly close. Declaring a larger size than the tiles really are tricks Cesium into
+      // fetching one zoom level coarser than it normally would for the current view and
+      // stretching it to fill the same screen space — the labels enlarge right along with it, so
+      // they're legible sooner instead of staying small until a much closer zoom.
+      tileWidth: 512,
+      tileHeight: 512,
+      maximumLevel: 20, // +1 over the service's real deepest level, since requests now land one level coarser
+    });
+    state.labelsLayer = viewer.imageryLayers.addImageryProvider(provider);
+    return true;
+  } catch { return false; }
+}
+function removeLabelsLayer() {
+  if (state.labelsLayer) { try { viewer.imageryLayers.remove(state.labelsLayer); } catch {} state.labelsLayer = null; }
+}
+
+function enableDefaultImagery() {
+  const ok = addImageryLayer();
+  const cb = $('imagery');
+  if (cb) cb.checked = !!ok;
+  const labelsOk = ok && addLabelsLayer();
+  const labelsCb = $('imagery-labels');
+  if (labelsCb) labelsCb.checked = !!labelsOk;
+}
+
 function toggleImagery(e) {
   if (!cesiumOK) return;
   if (e.target.checked) {
-    try {
-      const provider = new Cesium.UrlTemplateImageryProvider({
-        url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        maximumLevel: 21,
-      });
-      state.imageryLayer = viewer.imageryLayers.addImageryProvider(provider);
-    } catch (err) { setStatus('Imagery requires an internet connection.'); }
+    if (!addImageryLayer()) setStatus('Imagery requires an internet connection.');
   } else if (state.imageryLayer) {
     viewer.imageryLayers.remove(state.imageryLayer);
     state.imageryLayer = null;
+    // Labels only make sense drawn over the satellite imagery — turning it off takes them with it.
+    removeLabelsLayer();
+    const labelsCb = $('imagery-labels'); if (labelsCb) labelsCb.checked = false;
+  }
+}
+
+function toggleImageryLabels(e) {
+  if (!cesiumOK) return;
+  if (e.target.checked) {
+    // Labels need the base imagery underneath them — turn it on first if it isn't already.
+    if (!state.imageryLayer) {
+      const cb = $('imagery');
+      if (!addImageryLayer()) { setStatus('Labels require an internet connection.'); e.target.checked = false; return; }
+      if (cb) cb.checked = true;
+    }
+    if (!addLabelsLayer()) { setStatus('Labels require an internet connection.'); e.target.checked = false; }
+  } else {
+    removeLabelsLayer();
   }
 }
 
