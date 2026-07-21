@@ -19,7 +19,8 @@ const state = {
   photoByWp: new Map(), // wpIndex -> [photo]
   entities: { points: [], lines: [], path: null, heading: null },
   imageryLayer: null,
-  labelsLayer: null,   // "hybrid" overlay: place names, roads, borders on top of the satellite imagery
+  labelsLayer: null,   // "hybrid" overlay: place names + borders on top of the satellite imagery
+  roadsLayer: null,    // "hybrid" overlay: street/road linework, drawn under the labels above
   tileset: null,
   fpv: false,
   routeBounds: null,   // { lat, lng, h, radius } computed from waypoints
@@ -1210,6 +1211,7 @@ async function resetSession() {
     if (state.tileset) { try { viewer.scene.primitives.remove(state.tileset); } catch {} }
     if (state.imageryLayer) { try { viewer.imageryLayers.remove(state.imageryLayer); } catch {} }
     if (state.labelsLayer) { try { viewer.imageryLayers.remove(state.labelsLayer); } catch {} }
+    if (state.roadsLayer) { try { viewer.imageryLayers.remove(state.roadsLayer); } catch {} }
     viewer.camera.frustum.fov = Cesium.Math.toRadians(60);
     setFpvMouseMode(false); // restore map mouse controls + cursor
   }
@@ -1228,6 +1230,7 @@ async function resetSession() {
   state.photoByWp = new Map();
   state.imageryLayer = null;
   state.labelsLayer = null;
+  state.roadsLayer = null;
   state.tileset = null;
   state.modelLoaded = false;
   state.placingWaypoint = false;
@@ -2570,11 +2573,31 @@ function addImageryLayer() {
     return true;
   } catch { return false; }
 }
-// "Hybrid" overlay — ArcGIS's reference layer of place names, roads, and borders, drawn (as
-// transparent tiles) on top of the satellite imagery above. Added after the base imagery layer so
-// it renders above it in the imagery stack.
+// "Hybrid" overlay — two free, keyless ArcGIS reference layers stacked on top of the satellite
+// imagery above: road/street linework first, then place names + borders on top of that (so text
+// isn't drawn under road lines). Both are the same public tile service family as the imagery
+// layer (services.arcgisonline.com) — no API key, no billing account, same as everything else in
+// this app. (An actual Google-branded basemap would need a Google Maps Platform API key + billing
+// on file — not used here on purpose.)
+function addRoadsLayer() {
+  if (!cesiumOK || state.roadsLayer) return;
+  try {
+    const provider = new Cesium.UrlTemplateImageryProvider({
+      url: 'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
+      tileWidth: 512,
+      tileHeight: 512,
+      maximumLevel: 20,
+    });
+    state.roadsLayer = viewer.imageryLayers.addImageryProvider(provider);
+    return true;
+  } catch { return false; }
+}
+function removeRoadsLayer() {
+  if (state.roadsLayer) { try { viewer.imageryLayers.remove(state.roadsLayer); } catch {} state.roadsLayer = null; }
+}
 function addLabelsLayer() {
   if (!cesiumOK || state.labelsLayer) return;
+  addRoadsLayer(); // roads first so they sit under the place-name text added below
   try {
     const provider = new Cesium.UrlTemplateImageryProvider({
       url: 'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
@@ -2589,10 +2612,11 @@ function addLabelsLayer() {
     });
     state.labelsLayer = viewer.imageryLayers.addImageryProvider(provider);
     return true;
-  } catch { return false; }
+  } catch { removeRoadsLayer(); return false; }
 }
 function removeLabelsLayer() {
   if (state.labelsLayer) { try { viewer.imageryLayers.remove(state.labelsLayer); } catch {} state.labelsLayer = null; }
+  removeRoadsLayer();
 }
 
 function enableDefaultImagery() {
