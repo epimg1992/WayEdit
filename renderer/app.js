@@ -57,6 +57,13 @@ let fpvSpeedMode = 0;
 let fpvRaf = null;
 let fpvLastT = null;
 
+// Shift+Up/Down camera-height nudge for the normal (non-FPV) map camera — same held-key +
+// requestAnimationFrame pattern as the FPV W/S/A/D/C/Z loop, so it ramps smoothly instead of
+// jumping in fixed steps per keypress.
+let mapHeightKeys = new Set();
+let mapHeightRaf = null;
+let mapHeightLastT = null;
+
 // Numbered teardrop pins (FlightHub-style). Built once, cached per number+color.
 const pinBuilder = new Cesium.PinBuilder();
 const pinCache = new Map();
@@ -551,6 +558,15 @@ function wireUi() {
       if (e.key === 'Enter') { confirmAim(); e.preventDefault(); return; }
       if (e.key === 'Escape') { revertAim(); e.preventDefault(); return; }
     }
+    // Shift+Up/Down raises/lowers the map camera itself — normal (non-FPV) navigation only;
+    // FPV has its own C/Z height controls tied to the aircraft, not the free-look camera. Held
+    // key -> continuous ramp (startMapHeightLoop), same feel as FPV's C/Z, not a per-press jump.
+    if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !state.fpv && cesiumOK && !isInputFocused()) {
+      e.preventDefault();
+      mapHeightKeys.add(e.key === 'ArrowUp' ? 'up' : 'down');
+      startMapHeightLoop();
+      return;
+    }
     if (!isInputFocused() && $('lightbox').classList.contains('hidden') && state.mission) {
       if (e.key === 'Delete' && state.selected >= 0) { e.preventDefault(); deleteSelectedWaypoint(); return; }
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
@@ -594,7 +610,39 @@ function wireUi() {
   document.addEventListener('keyup', (e) => {
     fpvKeys.delete(e.key.toLowerCase());
     if (fpvKeys.size === 0) stopFpvLoop();
+    if (e.key === 'ArrowUp') mapHeightKeys.delete('up');
+    if (e.key === 'ArrowDown') mapHeightKeys.delete('down');
+    if (mapHeightKeys.size === 0) stopMapHeightLoop();
   });
+}
+
+// Raise/lower the (non-FPV) map camera in place — same lat/lng and look direction, just altitude.
+// Same held-key + requestAnimationFrame loop as FPV's C/Z, so it ramps smoothly instead of
+// jumping per keypress. Rate is a fraction of current altitude per second (not a fixed m/s) so it
+// feels equally useful zoomed to the ground or zoomed way out over the whole site.
+const MAP_HEIGHT_RATE = 0.8; // fraction of current altitude, per second
+function startMapHeightLoop() {
+  if (mapHeightRaf != null) return;
+  mapHeightLastT = performance.now();
+  function tick(t) {
+    if (state.fpv || !cesiumOK || mapHeightKeys.size === 0) { mapHeightRaf = null; return; }
+    const dt = Math.min((t - mapHeightLastT) / 1000, 0.1);
+    mapHeightLastT = t;
+    const carto = Cesium.Cartographic.fromCartesian(viewer.camera.position);
+    const rate = Math.max(1, carto.height * MAP_HEIGHT_RATE);
+    let dir = 0;
+    if (mapHeightKeys.has('up')) dir += 1;
+    if (mapHeightKeys.has('down')) dir -= 1;
+    if (dir !== 0) {
+      carto.height += dir * rate * dt;
+      viewer.camera.position = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, carto.height);
+    }
+    mapHeightRaf = requestAnimationFrame(tick);
+  }
+  mapHeightRaf = requestAnimationFrame(tick);
+}
+function stopMapHeightLoop() {
+  if (mapHeightRaf != null) { cancelAnimationFrame(mapHeightRaf); mapHeightRaf = null; }
 }
 
 function setStatus(msg) { $('status').textContent = msg; }
@@ -2469,6 +2517,30 @@ function fitView() {
   viewer.flyTo(state.entities.points, { duration: 0.8 }).catch(() => {});
 }
 
+// Esri's elevation service documents its heights as orthometric (mean-sea-level), not WGS84
+// ellipsoidal — but Cesium places terrain directly at "ellipsoid height = raw value," and the 3D
+// model/route heights are true WGS84 ellipsoid (per GEOID_SEP above, confirmed against NGS
+// GEOID18 for this region: ~-24.5 to -25.4 m). Left uncorrected, the terrain surface renders
+// ~25 m too high relative to the ellipsoid the model sits on — i.e. the model appears to float in
+// a gap below the surrounding "map." Wrapping the provider to shift every returned height by
+// GEOID_SEP converts it to the same ellipsoidal convention the model uses, closing that gap.
+function makeOffsetTerrainProvider(base, offsetMeters) {
+  const wrapper = Object.create(base);
+  wrapper.requestTileGeometry = function (x, y, level, request) {
+    const result = base.requestTileGeometry(x, y, level, request);
+    if (!result || typeof result.then !== 'function') return result; // undefined = throttled; pass through
+    return result.then((data) => {
+      if (data && data._structure) {
+        data._structure = Object.assign({}, data._structure, {
+          heightOffset: (data._structure.heightOffset || 0) + offsetMeters,
+        });
+      }
+      return data;
+    });
+  };
+  return wrapper;
+}
+
 // Real ground elevation for the bare globe (Esri's public elevation service — no API key, same as
 // the imagery layers above). Without this the globe is a flat WGS84 ellipsoid at 0 m everywhere,
 // while a loaded 3D model sits at its true elevation (often several hundred metres) — the model
@@ -2479,7 +2551,9 @@ function enableRealTerrain() {
   if (!cesiumOK) return;
   Cesium.ArcGISTiledElevationTerrainProvider.fromUrl(
     'https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer'
-  ).then((terrainProvider) => { if (cesiumOK) viewer.terrainProvider = terrainProvider; }).catch(() => {});
+  ).then((terrainProvider) => {
+    if (cesiumOK) viewer.terrainProvider = makeOffsetTerrainProvider(terrainProvider, GEOID_SEP);
+  }).catch(() => {});
 }
 
 // Online satellite imagery — ArcGIS World Imagery, draped on the bare globe so it reads like an
