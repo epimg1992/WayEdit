@@ -563,3 +563,64 @@ ipcMain.handle('read-rtk-presets', async () => {
     return Array.isArray(parsed.presets) ? parsed.presets : [];
   } catch { return []; }
 });
+
+// ---------------------------------------------------------------------------
+// IPC: Compare RTK photos — read one image's full metadata + pixels for the
+// RTK-offset compare tool. The operator flies the SAME waypoint (e.g. WP0, a
+// straight-down shot) under two RTK sources (LOCAL vs the Dock 3's own base);
+// the frame offset shows up as a ground-content shift between the two captures,
+// NOT as a GPS difference (the aircraft servos to the same commanded coordinate
+// in each frame, so EXIF GPS reads ~identical). So we return the decoded pixels
+// (as a data URL the renderer draws to a canvas for image matching) plus every
+// metadata field the renderer needs to turn a pixel shift into metres E/N/U:
+// altitude (abs + rel → ΔU and the ground datum), gimbal yaw (rotates the pixel
+// shift into compass E/N), and 35mm-equivalent focal length + pixel dimensions
+// (the GSD that scales pixels → metres).
+async function readCompareMeta(full) {
+  const md = await exifr.parse(full, { xmp: true, mergeOutput: true, translateValues: false }).catch(() => null);
+  const num = (v) => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+  const m = md || {};
+  // GPS: exifr.parse gives decimal latitude/longitude with the gps option folded in,
+  // but fall back to exifr.gps if the merged parse didn't resolve them.
+  let lat = num(m.latitude), lng = num(m.longitude);
+  if (lat == null || lng == null) {
+    const g = await exifr.gps(full).catch(() => null);
+    if (g) { lat = g.latitude; lng = g.longitude; }
+  }
+  return {
+    lat, lng,
+    // DJI XMP (drone-dji:*): absolute = ellipsoid/MSL alt in the frame; relative = height
+    // above the takeoff/home point (≈ AGL over the pad). Both are needed: relAlt is the GSD
+    // height, and (absAlt − relAlt) isolates each frame's idea of the ground's absolute
+    // elevation — the difference between the two flights is the vertical frame offset ΔU.
+    absAlt: num(m.AbsoluteAltitude) != null ? num(m.AbsoluteAltitude) : num(m.GPSAltitude),
+    relAlt: num(m.RelativeAltitude),
+    gimbalYaw:   num(m.GimbalYawDegree),
+    gimbalPitch: num(m.GimbalPitchDegree),
+    flightYaw:   num(m.FlightYawDegree),
+    focalMm:     num(m.FocalLength),
+    focal35:     num(m.FocalLengthIn35mmFormat) != null ? num(m.FocalLengthIn35mmFormat) : num(m.FocalLengthIn35mmFilm),
+    imgW: num(m.ExifImageWidth) || num(m.ImageWidth) || num(m.PixelXDimension),
+    imgH: num(m.ExifImageHeight) || num(m.ImageHeight) || num(m.PixelYDimension),
+    rtkFlag: m.RtkFlag != null ? String(m.RtkFlag) : null,
+    make: m.Make || null,
+    model: m.Model || null,
+    dateTime: m.DateTimeOriginal ? new Date(m.DateTimeOriginal).getTime() : null,
+  };
+}
+
+ipcMain.handle('compare-pick-image', async (_e) => {
+  const r = await dialog.showOpenDialog(winOf(_e), {
+    title: 'Pick a photo to compare',
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'tif', 'tiff'] }],
+  });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const full = r.filePaths[0];
+  const meta = await readCompareMeta(full).catch(() => ({}));
+  const buf = await fsp.readFile(full);
+  const ext = path.extname(full).toLowerCase();
+  const mime = ext === '.png' ? 'image/png' : (ext === '.tif' || ext === '.tiff') ? 'image/tiff' : 'image/jpeg';
+  const dataUrl = `data:${mime};base64,` + buf.toString('base64');
+  return { path: full, name: path.basename(full), dataUrl, meta };
+});

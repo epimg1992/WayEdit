@@ -25,4 +25,5 @@ contextBridge.exposeInMainWorld('api', {
   loadRecentPhotos: (dir) => ipcRenderer.invoke('load-recent-photos', dir),
   loadRecentRoute:  (filePath) => ipcRenderer.invoke('load-recent-route', filePath),
   readRtkPresets:   () => ipcRenderer.invoke('read-rtk-presets'),
+  comparePickImage: () => ipcRenderer.invoke('compare-pick-image'),
 });

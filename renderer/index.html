@@ -48,6 +48,7 @@
           <button class="dropdown-item" id="btn-uniquify">Uniquify WP names</button>
           <button class="dropdown-item" id="btn-rename-photos">Rename matched photos</button>
           <button class="dropdown-item" id="btn-shift">Shift route (RTK re-base)…</button>
+          <button class="dropdown-item" id="btn-compare" title="Measure the LOCAL↔DOCK frame offset from two photos of the same waypoint">Compare RTK photos…</button>
           <button class="dropdown-item" id="btn-export">Export KMZ…</button>
           <div class="dropdown-divider"></div>
           <button class="dropdown-item danger" id="btn-reset">Reset session</button>
@@ -417,6 +418,73 @@
       <div class="newroute-footer">
         <button class="btn" id="confirm-cancel">Cancel</button>
         <button class="btn danger" id="confirm-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Compare RTK photos: measure the LOCAL↔DOCK frame offset from two photos of the SAME waypoint
+       (fly WP0 under each RTK source). Metadata gives ΔU (altitude); image-matching a common patch
+       of flat ground gives ΔE/ΔN; the result feeds straight into Shift route. -->
+  <div id="compare-modal" class="session-modal hidden">
+    <div class="session-dialog compare-dialog">
+      <div class="session-header">
+        <span>Compare RTK photos — measure frame offset</span>
+        <button id="compare-modal-close" class="session-close-btn">✕</button>
+      </div>
+      <div class="compare-body">
+        <p class="compare-hint">
+          Fly the <b>same waypoint</b> (e.g. WP0, straight down) under each RTK source, then load both here.
+          Click a patch of <b>flat, textured ground</b> visible in both images — a pad edge, a painted mark —
+          and drag a box over it. Avoid tall vessels/trucks (parallax throws the match off).
+        </p>
+        <div class="compare-panes">
+          <div class="compare-pane">
+            <div class="compare-pane-head"><span class="compare-tag tag-local">LOCAL</span> <span id="cmp-a-name" class="compare-fname">— no photo —</span></div>
+            <div class="compare-canvas-wrap">
+              <canvas id="cmp-a-canvas" class="compare-canvas"></canvas>
+              <div id="cmp-a-empty" class="compare-empty">Pick the LOCAL photo</div>
+            </div>
+            <button class="btn" id="cmp-a-pick">Pick LOCAL photo…</button>
+          </div>
+          <div class="compare-pane">
+            <div class="compare-pane-head"><span class="compare-tag tag-dock">DOCK</span> <span id="cmp-b-name" class="compare-fname">— no photo —</span></div>
+            <div class="compare-canvas-wrap">
+              <canvas id="cmp-b-canvas" class="compare-canvas"></canvas>
+              <div id="cmp-b-empty" class="compare-empty">Pick the DOCK photo</div>
+            </div>
+            <button class="btn" id="cmp-b-pick">Pick DOCK photo…</button>
+          </div>
+        </div>
+
+        <table class="compare-meta" id="cmp-meta">
+          <thead><tr><th>Field</th><th class="tag-local-th">LOCAL</th><th class="tag-dock-th">DOCK</th><th>Δ</th></tr></thead>
+          <tbody id="cmp-meta-body"></tbody>
+        </table>
+
+        <div class="compare-controls">
+          <label class="compare-ctrl" title="Height above the ground you photographed — defaults to the photo's relative altitude. Used to scale pixels → metres.">
+            <span>Height above ground (<span class="cmp-unit">m</span>)</span>
+            <input type="number" id="cmp-height" step="0.1" class="newroute-input" />
+          </label>
+          <button class="btn primary" id="cmp-match" disabled>Match ground patch → offset</button>
+          <span id="cmp-match-status" class="compare-status"></span>
+        </div>
+
+        <div class="compare-result hidden" id="cmp-result">
+          <div class="compare-result-nums">
+            <span>ΔEast <b id="cmp-de">—</b></span>
+            <span>ΔNorth <b id="cmp-dn">—</b></span>
+            <span>ΔUp <b id="cmp-du">—</b></span>
+            <span class="cmp-unit-lbl">(<span class="cmp-unit">m</span>)</span>
+          </div>
+          <p class="compare-result-note" id="cmp-result-note"></p>
+          <div class="compare-result-actions">
+            <input type="text" id="cmp-preset-name" class="newroute-input" placeholder="offset name, e.g. Rio LOCAL→DOCK 07-22" autocomplete="off" />
+            <button class="btn" id="cmp-save">Save as preset</button>
+            <button class="btn" id="cmp-copy">Copy E/N/U</button>
+            <button class="btn primary" id="cmp-apply">Apply to route (Shift)</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

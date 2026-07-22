@@ -316,10 +316,12 @@ function wireUi() {
   $('btn-uniquify').onclick = uniquifyWpNames;
   $('btn-rename-photos').onclick = renameMatchedPhotos;
   $('btn-shift').onclick = openShiftPanel;
+  $('btn-compare').onclick = openCompareModal;
   $('btn-export').onclick = exportKmz;
   $('btn-reset').onclick = resetSession;
   $('btn-new-route').onclick = openCreateRouteModal;
   initShiftPanel();
+  initCompare();
   updateFilesBadge();
   syncCreateRouteEnabled();
 
@@ -1310,6 +1312,288 @@ function initShiftPanel() {
 
   renderShiftPresets = renderPresets;
   renderPresets('');
+}
+
+// ---------------------------------------------------------------------------
+// Compare RTK photos — measure the LOCAL↔DOCK frame offset from two captures
+// ---------------------------------------------------------------------------
+// The operator flies the SAME waypoint (e.g. WP0, a straight-down shot) under two RTK sources.
+// Both photos' EXIF GPS read ~identical (the aircraft servos to the same commanded coordinate in
+// each frame), so the frame offset is NOT a coordinate difference — it's a shift of the ground
+// CONTENT between the two images. We image-match a common patch of flat ground to get that pixel
+// shift, convert to metres via ground-sample-distance, rotate by the gimbal yaw to get E/N, and
+// take the vertical offset from the altitude metadata. The result is exactly a "LOCAL→DOCK" vector
+// (apply to a LOCAL-authored route so it flies correctly under the dock's RTK), so it drops straight
+// into Shift route / the saved-offset presets.
+const CMP_WORK_W = 720;        // working resolution for display + matching (px wide)
+const cmpState = { a: null, b: null };
+let cmpResult = null;          // { e, n, u, uKnown, ncc } in metres
+
+// Great-circle distance in metres — mirrors the coworker's photo_distance.py (same Earth radius),
+// so the metadata separations here match the numbers that tool reports.
+function cmpHaversineM(lat1, lon1, lat2, lon2) {
+  const R = 6371008.8;
+  const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
+  const dp = (lat2 - lat1) * Math.PI / 180, dl = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+// Heading difference normalized to [-180, 180] — handles the ±180° wrap so e.g. 179° vs −179°
+// reads as 2°, not −358°.
+function cmpNormYaw(d) { return ((d + 540) % 360) - 180; }
+
+function openCompareModal() {
+  const u = hUnit();
+  document.querySelectorAll('#compare-modal .cmp-unit').forEach((el) => { el.textContent = u; });
+  $('compare-modal').classList.remove('hidden');
+}
+
+// Decode an image to a working-resolution grayscale buffer for matching.
+function cmpGrayscale(img) {
+  const W = CMP_WORK_W, H = Math.max(1, Math.round(W * img.naturalHeight / img.naturalWidth));
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, W, H);
+  const d = ctx.getImageData(0, 0, W, H).data;
+  const g = new Float32Array(W * H);
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) g[j] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  return { g, W, H };
+}
+
+// Draw a pane's image (scaled to CMP_WORK_W) plus any selection/match box overlay.
+function cmpDrawPane(which) {
+  const p = cmpState[which]; if (!p || !p.img) return;
+  const canvas = $(which === 'a' ? 'cmp-a-canvas' : 'cmp-b-canvas');
+  canvas.width = p.gray.W; canvas.height = p.gray.H;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(p.img, 0, 0, canvas.width, canvas.height);
+  const box = which === 'a' ? p.box : p.matchBox;
+  if (box) {
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = which === 'a' ? '#4fd0e6' : '#f0a94c';
+    ctx.strokeRect(box.x, box.y, box.w, box.h);
+  }
+}
+
+async function cmpPick(which) {
+  if (!window.api.comparePickImage) { setStatus('Compare not available in this build.'); return; }
+  const res = await window.api.comparePickImage();
+  if (!res) return;
+  const img = new Image();
+  img.onload = () => {
+    const gray = cmpGrayscale(img);
+    cmpState[which] = { path: res.path, name: res.name, meta: res.meta || {}, img, gray, box: null, matchBox: null };
+    $(which === 'a' ? 'cmp-a-name' : 'cmp-b-name').textContent = res.name;
+    $(which === 'a' ? 'cmp-a-empty' : 'cmp-b-empty').classList.add('hidden');
+    cmpDrawPane(which);
+    // Default the height field from the first photo's relative altitude (height above takeoff).
+    const relA = cmpState.a && cmpState.a.meta.relAlt, relB = cmpState.b && cmpState.b.meta.relAlt;
+    const rel = relA != null ? relA : (relB != null ? relB : null);
+    if (rel != null && !$('cmp-height').value) $('cmp-height').value = toDisp(rel).toFixed(1);
+    renderCmpMeta();
+    updateCmpMatchEnabled();
+  };
+  img.onerror = () => setStatus('Could not decode that image.');
+  img.src = res.dataUrl;
+}
+
+function updateCmpMatchEnabled() {
+  const ready = cmpState.a && cmpState.b && cmpState.a.box;
+  $('cmp-match').disabled = !ready;
+}
+
+// Metadata diff table. GPS separation is shown as a sanity check — it should be near zero,
+// which confirms both flights targeted the same commanded point (and that the real offset is
+// the image shift, not a coordinate difference).
+function renderCmpMeta() {
+  const A = cmpState.a && cmpState.a.meta, B = cmpState.b && cmpState.b.meta;
+  const body = $('cmp-meta-body'); if (!body) return;
+  const u = hUnit();
+  const rows = [];
+  const push = (label, va, vb, delta, diff) => rows.push({ label, va, vb, delta, diff });
+  const n2 = (v) => v == null ? '—' : (Math.round(v * 100) / 100).toString();
+  const alt = (v) => v == null ? '—' : toDisp(v).toFixed(2) + ' ' + u;
+  const deg = (v) => v == null ? '—' : v.toFixed(2) + '°';
+  if (A || B) {
+    // GPS/metadata separation (haversine ground + 3D), mirroring the coworker's photo_distance.py.
+    // For an RTK-offset test both photos target the SAME commanded coordinate, so this reads ~0 —
+    // a near-zero separation confirms the real offset is the image shift, not the coordinates.
+    let sep = null, sep3d = null;
+    if (A && B && A.lat != null && B.lat != null && A.lng != null && B.lng != null) {
+      sep = cmpHaversineM(A.lat, A.lng, B.lat, B.lng);
+      const dAlt = (A.absAlt != null && B.absAlt != null) ? (B.absAlt - A.absAlt) : 0;
+      sep3d = Math.sqrt(sep * sep + dAlt * dAlt);
+    }
+    const dm = (v) => v == null ? '—' : '≈ ' + toDisp(v).toFixed(2) + ' ' + u;
+    const yawKnown = A && B && A.gimbalYaw != null && B.gimbalYaw != null;
+    const dYaw = yawKnown ? cmpNormYaw(B.gimbalYaw - A.gimbalYaw) : null;
+    push('GPS separation (ground)', '', '', dm(sep), sep != null && sep > 0.3);
+    push('GPS separation (3D)', '', '', dm(sep3d), false);
+    push('Absolute alt', alt(A && A.absAlt), alt(B && B.absAlt), A && B && A.absAlt != null && B.absAlt != null ? (toDisp(B.absAlt - A.absAlt)).toFixed(2) + ' ' + u : '—', false);
+    push('Relative alt', alt(A && A.relAlt), alt(B && B.relAlt), A && B && A.relAlt != null && B.relAlt != null ? (toDisp(B.relAlt - A.relAlt)).toFixed(2) + ' ' + u : '—', false);
+    push('Gimbal yaw', deg(A && A.gimbalYaw), deg(B && B.gimbalYaw), dYaw != null ? dYaw.toFixed(2) + '°' : '—', dYaw != null && Math.abs(dYaw) > 2);
+    push('Gimbal pitch', deg(A && A.gimbalPitch), deg(B && B.gimbalPitch), A && B && A.gimbalPitch != null && B.gimbalPitch != null ? (B.gimbalPitch - A.gimbalPitch).toFixed(2) + '°' : '—', false);
+    push('Focal (35mm eq)', A && A.focal35 != null ? A.focal35 + ' mm' : '—', B && B.focal35 != null ? B.focal35 + ' mm' : '—', '', false);
+    push('Image size', A && A.imgW ? A.imgW + '×' + A.imgH : '—', B && B.imgW ? B.imgW + '×' + B.imgH : '—', '', false);
+    push('RTK flag', A && A.rtkFlag != null ? A.rtkFlag : '—', B && B.rtkFlag != null ? B.rtkFlag : '—', '', false);
+  }
+  body.innerHTML = rows.map((r) =>
+    `<tr class="${r.diff ? 'cmp-diff' : ''}"><td>${r.label}</td><td>${r.va}</td><td>${r.vb}</td><td class="cmp-delta">${r.delta}</td></tr>`
+  ).join('');
+}
+
+// Normalized cross-correlation: find where A's boxed patch best matches in B, searching a
+// ±maxShift window around the same pixel location. Template pixels are strided so cost stays
+// bounded regardless of box size. Returns the integer (ox,oy) shift in working px + peak NCC.
+function cmpMatchNCC(A, B, box, maxShift) {
+  const stride = Math.max(1, Math.round(Math.max(box.w, box.h) / 70));
+  const pts = []; let tsum = 0;
+  for (let y = box.y; y < box.y + box.h; y += stride)
+    for (let x = box.x; x < box.x + box.w; x += stride) { const v = A.g[y * A.W + x]; pts.push({ dx: x - box.x, dy: y - box.y, v }); tsum += v; }
+  const tmean = tsum / pts.length; let tss = 0;
+  for (const p of pts) { p.v -= tmean; tss += p.v * p.v; }
+  let best = { ncc: -2, ox: 0, oy: 0 };
+  for (let oy = -maxShift; oy <= maxShift; oy++) {
+    for (let ox = -maxShift; ox <= maxShift; ox++) {
+      const bx0 = box.x + ox, by0 = box.y + oy;
+      if (bx0 < 0 || by0 < 0 || bx0 + box.w >= B.W || by0 + box.h >= B.H) continue;
+      let bsum = 0;
+      for (const p of pts) bsum += B.g[(by0 + p.dy) * B.W + (bx0 + p.dx)];
+      const bmean = bsum / pts.length;
+      let dot = 0, bss = 0;
+      for (const p of pts) { const bv = B.g[(by0 + p.dy) * B.W + (bx0 + p.dx)] - bmean; dot += p.v * bv; bss += bv * bv; }
+      const ncc = dot / Math.sqrt(tss * bss + 1e-9);
+      if (ncc > best.ncc) best = { ncc, ox, oy };
+    }
+  }
+  return best;
+}
+
+function cmpDoMatch() {
+  const A = cmpState.a, B = cmpState.b;
+  if (!A || !B || !A.box) { setStatus('Load both photos and drag a box over common ground on the LOCAL image.'); return; }
+  let H = parseFloat($('cmp-height').value);
+  H = isNaN(H) ? NaN : fromDisp(H);
+  if (isNaN(H) || H <= 0) { $('cmp-match-status').textContent = 'Enter a valid height above ground.'; return; }
+  const focal35 = A.meta.focal35 || B.meta.focal35 || null;
+  const hfov = focal35 ? 2 * Math.atan(18 / focal35) : (WIDE_FOV_DEG * Math.PI / 180);
+  const mpp = 2 * H * Math.tan(hfov / 2) / CMP_WORK_W; // metres per working px (square GSD at nadir)
+  $('cmp-match-status').textContent = 'Matching…';
+  setTimeout(() => {
+    const maxShift = Math.min(180, Math.max(20, Math.round(4 / mpp))); // search up to ~4 m of offset
+    const best = cmpMatchNCC(A.gray, B.gray, A.box, maxShift);
+    // Show where it matched on B for visual confirmation.
+    B.matchBox = { x: A.box.x + best.ox, y: A.box.y + best.oy, w: A.box.w, h: A.box.h };
+    cmpDrawPane('b');
+    // Pixel shift → ground (right/up relative to heading) → E/N.
+    const psi = ((A.meta.gimbalYaw != null ? A.meta.gimbalYaw : (A.meta.flightYaw != null ? A.meta.flightYaw : 0)) * Math.PI) / 180;
+    const right = best.ox * mpp, up = -best.oy * mpp;
+    const e = right * Math.cos(psi) + up * Math.sin(psi);
+    const n = -right * Math.sin(psi) + up * Math.cos(psi);
+    // Vertical: each frame's own altitude of the physical takeoff pad = absAlt − relAlt; the
+    // difference between the two flights is the vertical datum offset.
+    let uu = 0, uKnown = false;
+    if ([A.meta.absAlt, A.meta.relAlt, B.meta.absAlt, B.meta.relAlt].every((v) => v != null)) {
+      uu = (B.meta.absAlt - B.meta.relAlt) - (A.meta.absAlt - A.meta.relAlt);
+      uKnown = true;
+    }
+    cmpResult = { e, n, u: uu, uKnown, ncc: best.ncc };
+    renderCmpResult();
+    $('cmp-match-status').textContent = '';
+  }, 20);
+}
+
+function renderCmpResult() {
+  if (!cmpResult) return;
+  const u = hUnit();
+  $('cmp-de').textContent = toDisp(cmpResult.e).toFixed(2);
+  $('cmp-dn').textContent = toDisp(cmpResult.n).toFixed(2);
+  $('cmp-du').textContent = cmpResult.uKnown ? toDisp(cmpResult.u).toFixed(2) : 'n/a';
+  const quality = cmpResult.ncc > 0.6 ? 'strong' : cmpResult.ncc > 0.35 ? 'moderate' : 'weak — re-pick a flatter, more textured patch';
+  const notes = [];
+  notes.push(`Match confidence: ${quality} (NCC ${cmpResult.ncc.toFixed(2)}).`);
+  notes.push('This is a LOCAL→DOCK vector: apply it to this LOCAL route so it flies correctly under the dock’s RTK.');
+  if (!cmpResult.uKnown) notes.push('Vertical (ΔUp) needs absolute + relative altitude in both photos’ metadata — enter it manually in Shift route if missing.');
+  $('cmp-result-note').textContent = notes.join(' ');
+  $('cmp-result').classList.remove('hidden');
+}
+
+function cmpApply() {
+  if (!cmpResult) return;
+  if (!state.mission) { setStatus('Open a route first, then Apply.'); return; }
+  const { e, n, u } = cmpResult;
+  openShiftPanel();
+  applyShift(e, n, u);
+  pushHistory({
+    label: `compare offset E${e.toFixed(2)} N${n.toFixed(2)} U${u.toFixed(2)}`,
+    undo: () => applyShift(-e, -n, -u),
+    redo: () => applyShift(e, n, u),
+  });
+  $('compare-modal').classList.add('hidden');
+  setStatus('Applied measured offset — check alignment in the viewer, then Export KMZ under a new name.');
+}
+
+function cmpSavePreset() {
+  if (!cmpResult) return;
+  const name = $('cmp-preset-name').value.trim();
+  if (!name) { setStatus('Name the offset first (e.g. "Rio LOCAL→DOCK 07-22").'); return; }
+  let arr = [];
+  try { arr = JSON.parse(localStorage.getItem('rtkOffsets') || '[]'); } catch {}
+  if (!Array.isArray(arr)) arr = [];
+  arr = arr.filter((p) => p.name !== name);
+  arr.push({ name, e: round2(cmpResult.e), n: round2(cmpResult.n), u: round2(cmpResult.u) });
+  try { localStorage.setItem('rtkOffsets', JSON.stringify(arr)); } catch {}
+  if (renderShiftPresets) renderShiftPresets();
+  $('cmp-preset-name').value = '';
+  setStatus(`Saved offset "${name}" — reusable on any route via Shift route → Apply.`);
+}
+
+function cmpCopy() {
+  if (!cmpResult) return;
+  const txt = `E=${cmpResult.e.toFixed(3)} N=${cmpResult.n.toFixed(3)} U=${cmpResult.uKnown ? cmpResult.u.toFixed(3) : 'n/a'} (metres, LOCAL→DOCK)`;
+  try { navigator.clipboard.writeText(txt); setStatus('Copied offset to clipboard.'); }
+  catch { setStatus(txt); }
+}
+
+function initCompare() {
+  if (!$('compare-modal')) return;
+  $('cmp-a-pick').onclick = () => cmpPick('a');
+  $('cmp-b-pick').onclick = () => cmpPick('b');
+  $('compare-modal-close').onclick = () => $('compare-modal').classList.add('hidden');
+  $('compare-modal').addEventListener('click', (ev) => { if (ev.target.id === 'compare-modal') $('compare-modal').classList.add('hidden'); });
+  $('cmp-match').onclick = cmpDoMatch;
+  $('cmp-apply').onclick = cmpApply;
+  $('cmp-save').onclick = cmpSavePreset;
+  $('cmp-copy').onclick = cmpCopy;
+
+  // Box selection on the LOCAL canvas (pointer drag).
+  const canvas = $('cmp-a-canvas');
+  let drag = null;
+  const toCanvas = (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (ev.clientX - rect.left) * (canvas.width / rect.width),
+      y: (ev.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  };
+  canvas.addEventListener('pointerdown', (ev) => {
+    if (!cmpState.a) return;
+    canvas.setPointerCapture(ev.pointerId);
+    drag = toCanvas(ev); cmpState.a.box = null;
+  });
+  canvas.addEventListener('pointermove', (ev) => {
+    if (!drag || !cmpState.a) return;
+    const p = toCanvas(ev);
+    cmpState.a.box = { x: Math.min(drag.x, p.x), y: Math.min(drag.y, p.y), w: Math.abs(p.x - drag.x), h: Math.abs(p.y - drag.y) };
+    cmpDrawPane('a');
+  });
+  canvas.addEventListener('pointerup', () => {
+    drag = null;
+    const b = cmpState.a && cmpState.a.box;
+    if (b && (b.w < 20 || b.h < 20)) cmpState.a.box = null; // ignore stray clicks
+    if (cmpState.a) { cmpState.a.box && (cmpState.a.box = { x: Math.round(cmpState.a.box.x), y: Math.round(cmpState.a.box.y), w: Math.round(cmpState.a.box.w), h: Math.round(cmpState.a.box.h) }); }
+    cmpDrawPane('a');
+    updateCmpMatchEnabled();
+  });
 }
 
 // ---------------------------------------------------------------------------
