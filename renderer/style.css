@@ -37,12 +37,17 @@ body {
   background: linear-gradient(180deg, #131a23, #0d1219);
   border-bottom: 1px solid var(--line);
   flex: none;
+  /* The toolbar's own content (dropdowns, checkboxes, route name, font buttons) doesn't wrap and
+     has no width limit of its own — at a large font scale (or a narrow window) it can be wider
+     than the toolbar itself. `body` clips at `overflow: hidden`, so anything past that point was
+     simply unreachable (the reported symptom: the A+ button vanishing). Scroll the toolbar
+     itself instead, so everything in it always stays reachable. */
+  overflow-x: auto; overflow-y: hidden;
 }
-.brand { font-weight: 700; letter-spacing: 0.5px; font-size: 15px; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
+.brand { font-weight: 700; letter-spacing: 0.5px; font-size: 15px; white-space: nowrap; display: flex; align-items: center; gap: 8px; flex: none; }
 .brand-drone { color: var(--accent); flex: none; }
 .brand .sub { color: var(--ink-dim); font-weight: 400; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; margin-left: 6px; }
 .actions { display: flex; align-items: center; gap: 8px; flex: 1; }
-.actions .spacer { flex: 1; }
 .btn {
   background: var(--panel-2); color: var(--ink);
   border: 1px solid var(--line); border-radius: 6px;
@@ -58,14 +63,6 @@ body {
 .btn.danger { color: #ff7a59; }
 .btn.danger:hover { background: #2a1410; border-color: #ff7a59; color: #ff9178; }
 .font-ctrl { display: flex; gap: 2px; }
-.topbar-toggle {
-  display: flex; align-items: center; gap: 5px; white-space: nowrap; cursor: pointer;
-  font-size: calc(11px * var(--font-scale)); color: var(--ink-dim);
-  padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2);
-}
-.topbar-toggle:hover { border-color: #36465a; color: var(--ink); }
-.topbar-toggle input { cursor: pointer; }
-.topbar-toggle:has(input:checked) { border-color: var(--accent); color: var(--accent); }
 .topbar-select {
   background: #0c1118; color: var(--ink); border: 1px solid var(--line); border-radius: 4px;
   font-family: var(--mono); font-size: calc(11px * var(--font-scale)); padding: 2px 4px; cursor: pointer;
@@ -82,9 +79,12 @@ body {
 .dropdown-toggle::after { content: ''; }
 .dropdown-menu {
   display: none;
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
+  /* position: fixed (not absolute) — .topbar scrolls horizontally (overflow-x: auto), which per
+     spec forces overflow-y to clip too, and this menu renders below the 50px-tall toolbar, i.e.
+     outside that clipped box, so position: absolute made it invisible no matter how high its
+     z-index was. Fixed positioning escapes any ancestor's overflow clipping entirely; its
+     top/left are computed in JS from the toggle button's actual on-screen position when opened. */
+  position: fixed;
   z-index: 999;
   background: #0d1219;
   border: 1px solid #232c38;
@@ -107,20 +107,22 @@ body {
 .dropdown-item.danger:hover { background: #2a1410; color: #ff9178; }
 .dropdown-item.load-all-item { color: #6e9fc5; border-top: none; }
 .dropdown-divider { height: 1px; background: #232c38; margin: 4px 0; }
-.namefield { display: flex; flex-direction: column; font-size: 10px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: .6px; }
-.namefield input {
-  margin-top: 2px; background: #0c1118; border: 1px solid var(--line);
-  color: var(--ink); border-radius: 5px; padding: 5px 8px; font-family: var(--mono); width: 220px;
+
+/* View menu — checkbox/select/button rows, styled like dropdown-item but deliberately NOT that
+   class: .dropdown-item's click handler closes the menu on every click, which is right for
+   one-shot actions (File) but wrong here — adjusting Satellite then Labels then bumping font size
+   shouldn't require reopening the menu between each one. */
+.dropdown-menu.view-menu { min-width: 230px; padding: 6px 0; }
+.view-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 16px; color: var(--ink); font-family: var(--mono); font-size: 12px;
+  cursor: default; white-space: nowrap;
 }
-.namefield textarea#route-name {
-  margin-top: 2px; background: #0c1118; border: 1px solid var(--line);
-  color: var(--ink); border-radius: 5px; padding: 5px 8px;
-  font-family: var(--mono); font-size: calc(13px * var(--font-scale));
-  width: 220px; min-width: 160px; max-width: 620px; height: 30px;
-  resize: horizontal; overflow: hidden; white-space: nowrap;
-  line-height: 18px; box-sizing: border-box; text-transform: none; letter-spacing: normal;
-}
-.namefield textarea#route-name:focus { outline: none; border-color: var(--cyan); }
+.view-row:has(input[type="checkbox"]) { cursor: pointer; }
+.view-row:hover { background: #161c25; }
+.view-row input[type="checkbox"] { cursor: pointer; }
+.view-row-wrap { flex-wrap: wrap; }
+.view-row span:first-child { color: var(--ink-dim); min-width: 52px; }
 
 /* ---- grid ---- */
 .grid {

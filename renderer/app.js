@@ -58,12 +58,13 @@ let fpvSpeedMode = 0;
 let fpvRaf = null;
 let fpvLastT = null;
 
-// Shift+Up/Down camera-height nudge for the normal (non-FPV) map camera — same held-key +
+// Plain-arrow pan + Shift+Up/Down height for the normal (non-FPV) map camera — same held-key +
 // requestAnimationFrame pattern as the FPV W/S/A/D/C/Z loop, so it ramps smoothly instead of
-// jumping in fixed steps per keypress.
-let mapHeightKeys = new Set();
-let mapHeightRaf = null;
-let mapHeightLastT = null;
+// jumping in fixed steps per keypress. Only active with no waypoint selected — see the keydown
+// handler, where a selection hands plain arrows to list-walking instead.
+let mapMoveKeys = new Set();
+let mapMoveRaf = null;
+let mapMoveLastT = null;
 
 // Numbered teardrop pins (FlightHub-style). Built once, cached per number+color.
 const pinBuilder = new Cesium.PinBuilder();
@@ -166,6 +167,10 @@ function initCesium() {
     const picked = viewer.scene.pick(click.position);
     if (picked && picked.id && typeof picked.id.wpIndex === 'number') {
       selectWaypoint(picked.id.wpIndex);
+    } else {
+      // Clicked the model/empty space rather than a waypoint pin — deselect, handing plain
+      // arrow keys back to camera panning instead of walking the waypoint list.
+      deselectWaypoint();
     }
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
@@ -263,15 +268,34 @@ function initFpvMouseLook() {
 function $(id) { return document.getElementById(id); }
 
 function wireUi() {
-  // Dropdown menus — toggle on click, close on outside click or item select
+  // Dropdown menus — toggle on click, close on outside click or item select. The menu itself is
+  // position: fixed (see style.css — .topbar's horizontal scroll clips position: absolute
+  // children), so its screen position has to be computed here from the toggle button's actual
+  // on-screen location each time it opens, rather than via CSS top/left.
   document.querySelectorAll('.dropdown-toggle').forEach((toggle) => {
     toggle.addEventListener('click', (e) => {
       e.stopPropagation();
       const dd = toggle.closest('.dropdown');
+      const menu = dd.querySelector('.dropdown-menu');
       const wasOpen = dd.classList.contains('open');
       document.querySelectorAll('.dropdown.open').forEach((d) => d.classList.remove('open'));
-      if (!wasOpen) dd.classList.add('open');
+      if (!wasOpen) {
+        dd.classList.add('open');
+        const rect = toggle.getBoundingClientRect();
+        menu.style.top = (rect.bottom + 6) + 'px';
+        // Clamp so a menu opened near the right edge doesn't run off-screen.
+        const left = Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8);
+        menu.style.left = Math.max(8, left) + 'px';
+      }
     });
+  });
+  // The View menu's own controls (checkboxes, select, inputs, font buttons) live inside
+  // .view-menu — stop a click on any of them from ever bubbling out to the document-level
+  // "close all dropdowns" listener below, so adjusting Satellite then Labels then bumping font
+  // size doesn't require reopening the menu between each one. Click the toggle again, or click
+  // anywhere outside the menu, to close it.
+  document.querySelectorAll('.view-menu').forEach((menu) => {
+    menu.addEventListener('click', (e) => e.stopPropagation());
   });
   document.addEventListener('click', () => {
     document.querySelectorAll('.dropdown.open').forEach((d) => d.classList.remove('open'));
@@ -323,8 +347,6 @@ function wireUi() {
     if (k === 'z' && !e.shiftKey) { e.preventDefault(); undoAim(); }
     else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redoAim(); }
   });
-  $('route-name').oninput = (e) => { state.routeName = e.target.value; };
-
   // Captured-images band filter (ALL / WIDE / IR / ZOOM / PANO)
   document.querySelectorAll('#strip-filters .strip-filter').forEach((btn) => {
     btn.onclick = () => {
@@ -502,6 +524,14 @@ function wireUi() {
   $('placing-done').onclick = exitPlacingWaypoint;
   $('placing-cancel').onclick = discardRoute;
 
+  // Export KMZ modal — the route name only shows up here now, right before it names the saved
+  // file, instead of living in the toolbar all the time.
+  const closeExportModal = () => $('export-modal').classList.add('hidden');
+  $('export-modal-close').onclick = closeExportModal;
+  $('export-cancel').onclick = closeExportModal;
+  $('export-modal').onclick = (e) => { if (e.target.id === 'export-modal') closeExportModal(); };
+  $('export-confirm').onclick = confirmExportKmz;
+
   // Generic confirm dialog
   $('confirm-ok').onclick = () => resolveConfirm(true);
   $('confirm-cancel').onclick = () => resolveConfirm(false);
@@ -521,19 +551,6 @@ function wireUi() {
     apply();
     $('btn-font-down').onclick = () => { scale = Math.max(MIN, parseFloat((scale - STEP).toFixed(1))); apply(); };
     $('btn-font-up').onclick = () => { scale = Math.min(MAX, parseFloat((scale + STEP).toFixed(1))); apply(); };
-  })();
-
-  // Route-name field: single-line (no newlines), drag-to-widen, width remembered.
-  (function initRouteName() {
-    const ta = $('route-name');
-    if (!ta) return;
-    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ta.blur(); } });
-    try { const w = localStorage.getItem('routeNameWidth'); if (w) ta.style.width = w; } catch {}
-    if (window.ResizeObserver) {
-      new ResizeObserver(() => {
-        if (ta.style.width) { try { localStorage.setItem('routeNameWidth', ta.style.width); } catch {} }
-      }).observe(ta);
-    }
   })();
 
   // Waypoint search
@@ -567,16 +584,28 @@ function wireUi() {
     }
     // Shift+Up/Down raises/lowers the map camera itself — normal (non-FPV) navigation only;
     // FPV has its own C/Z height controls tied to the aircraft, not the free-look camera. Held
-    // key -> continuous ramp (startMapHeightLoop), same feel as FPV's C/Z, not a per-press jump.
+    // key -> continuous ramp (startMapMoveLoop), same feel as FPV's C/Z, not a per-press jump.
     if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !state.fpv && cesiumOK && !isInputFocused()) {
       e.preventDefault();
-      mapHeightKeys.add(e.key === 'ArrowUp' ? 'up' : 'down');
-      startMapHeightLoop();
+      mapMoveKeys.add(e.key === 'ArrowUp' ? 'ascend' : 'descend');
+      startMapMoveLoop();
+      return;
+    }
+    // Plain arrows (no Shift) pan the camera — Up/Down forward/back, Left/Right strafe, relative
+    // to where the camera is looking — but ONLY with no waypoint selected. With one selected,
+    // arrows walk the list instead (below); clicking the model/empty space deselects and hands
+    // the arrows back to panning.
+    if (!e.shiftKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)
+        && !state.fpv && cesiumOK && !isInputFocused() && state.selected === -1) {
+      e.preventDefault();
+      const tok = { ArrowUp: 'fwd', ArrowDown: 'back', ArrowLeft: 'left', ArrowRight: 'right' }[e.key];
+      mapMoveKeys.add(tok);
+      startMapMoveLoop();
       return;
     }
     if (!isInputFocused() && $('lightbox').classList.contains('hidden') && state.mission) {
       if (e.key === 'Delete' && state.selected >= 0) { e.preventDefault(); deleteSelectedWaypoint(); return; }
-      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && state.selected >= 0) {
         e.preventDefault();
         // Step through the currently-visible (filtered) waypoint list in display order,
         // so a search like "PRV" lets the arrows jump WP 115 → 200 → 300 → 332.
@@ -617,39 +646,75 @@ function wireUi() {
   document.addEventListener('keyup', (e) => {
     fpvKeys.delete(e.key.toLowerCase());
     if (fpvKeys.size === 0) stopFpvLoop();
-    if (e.key === 'ArrowUp') mapHeightKeys.delete('up');
-    if (e.key === 'ArrowDown') mapHeightKeys.delete('down');
-    if (mapHeightKeys.size === 0) stopMapHeightLoop();
+    // Remove both possible tokens per key — whether it was ascend/descend (Shift held) or
+    // fwd/back/left/right (plain) was decided by shiftKey at keydown, which may have changed by
+    // the time keyup fires (e.g. Shift released before the arrow); deleting a token that was
+    // never added is a harmless no-op on a Set.
+    if (e.key === 'ArrowUp') { mapMoveKeys.delete('ascend'); mapMoveKeys.delete('fwd'); }
+    if (e.key === 'ArrowDown') { mapMoveKeys.delete('descend'); mapMoveKeys.delete('back'); }
+    if (e.key === 'ArrowLeft') mapMoveKeys.delete('left');
+    if (e.key === 'ArrowRight') mapMoveKeys.delete('right');
+    if (mapMoveKeys.size === 0) stopMapMoveLoop();
   });
 }
 
-// Raise/lower the (non-FPV) map camera in place — same lat/lng and look direction, just altitude.
-// Same held-key + requestAnimationFrame loop as FPV's C/Z, so it ramps smoothly instead of
-// jumping per keypress. Rate is a fraction of current altitude per second (not a fixed m/s) so it
-// feels equally useful zoomed to the ground or zoomed way out over the whole site.
-const MAP_HEIGHT_RATE = 0.8; // fraction of current altitude, per second
-function startMapHeightLoop() {
-  if (mapHeightRaf != null) return;
-  mapHeightLastT = performance.now();
+// Move the (non-FPV) map camera in place: Shift+Up/Down raises/lowers altitude, plain
+// Up/Down/Left/Right pan forward/back/strafe relative to where the camera is looking (same
+// horizontal-plane projection technique as the FPV loop below, so "forward" never tilts into the
+// ground/sky regardless of camera pitch). Same held-key + requestAnimationFrame pattern as FPV's
+// W/S/A/D/C/Z, so it ramps smoothly instead of jumping per keypress. Rate is a fraction of current
+// altitude per second (not a fixed m/s) so it feels equally useful zoomed to the ground or zoomed
+// way out over the whole site.
+const MAP_MOVE_RATE = 0.12; // fraction of current altitude, per second
+function startMapMoveLoop() {
+  if (mapMoveRaf != null) return;
+  mapMoveLastT = performance.now();
+  const _v3 = () => new Cesium.Cartesian3();
   function tick(t) {
-    if (state.fpv || !cesiumOK || mapHeightKeys.size === 0) { mapHeightRaf = null; return; }
-    const dt = Math.min((t - mapHeightLastT) / 1000, 0.1);
-    mapHeightLastT = t;
-    const carto = Cesium.Cartographic.fromCartesian(viewer.camera.position);
-    const rate = Math.max(1, carto.height * MAP_HEIGHT_RATE);
-    let dir = 0;
-    if (mapHeightKeys.has('up')) dir += 1;
-    if (mapHeightKeys.has('down')) dir -= 1;
-    if (dir !== 0) {
-      carto.height += dir * rate * dt;
-      viewer.camera.position = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, carto.height);
+    if (state.fpv || !cesiumOK || mapMoveKeys.size === 0) { mapMoveRaf = null; return; }
+    const dt = Math.min((t - mapMoveLastT) / 1000, 0.1);
+    mapMoveLastT = t;
+    const cam = viewer.camera;
+    const carto = Cesium.Cartographic.fromCartesian(cam.position);
+    const dist = Math.max(1, carto.height * MAP_MOVE_RATE) * dt;
+
+    let vdir = 0;
+    if (mapMoveKeys.has('ascend')) vdir += 1;
+    if (mapMoveKeys.has('descend')) vdir -= 1;
+    if (vdir !== 0) {
+      carto.height += vdir * dist;
+      cam.position = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, carto.height);
     }
-    mapHeightRaf = requestAnimationFrame(tick);
+
+    if (mapMoveKeys.has('fwd') || mapMoveKeys.has('back') || mapMoveKeys.has('left') || mapMoveKeys.has('right')) {
+      const worldUp = Cesium.Cartesian3.normalize(cam.position, _v3());
+      const fwdH = Cesium.Cartesian3.subtract(
+        cam.direction,
+        Cesium.Cartesian3.multiplyByScalar(worldUp, Cesium.Cartesian3.dot(cam.direction, worldUp), _v3()),
+        _v3()
+      );
+      const fwdLen = Cesium.Cartesian3.magnitude(fwdH);
+      if (fwdLen > 1e-4) Cesium.Cartesian3.divideByScalar(fwdH, fwdLen, fwdH);
+      const rtH = Cesium.Cartesian3.subtract(
+        cam.right,
+        Cesium.Cartesian3.multiplyByScalar(worldUp, Cesium.Cartesian3.dot(cam.right, worldUp), _v3()),
+        _v3()
+      );
+      const rtLen = Cesium.Cartesian3.magnitude(rtH);
+      if (rtLen > 1e-4) Cesium.Cartesian3.divideByScalar(rtH, rtLen, rtH);
+
+      if (mapMoveKeys.has('fwd')) cam.move(fwdH, dist);
+      if (mapMoveKeys.has('back')) cam.move(fwdH, -dist);
+      if (mapMoveKeys.has('left')) cam.move(rtH, -dist);
+      if (mapMoveKeys.has('right')) cam.move(rtH, dist);
+    }
+
+    mapMoveRaf = requestAnimationFrame(tick);
   }
-  mapHeightRaf = requestAnimationFrame(tick);
+  mapMoveRaf = requestAnimationFrame(tick);
 }
-function stopMapHeightLoop() {
-  if (mapHeightRaf != null) { cancelAnimationFrame(mapHeightRaf); mapHeightRaf = null; }
+function stopMapMoveLoop() {
+  if (mapMoveRaf != null) { cancelAnimationFrame(mapMoveRaf); mapMoveRaf = null; }
 }
 
 function setStatus(msg) { $('status').textContent = msg; }
@@ -1250,12 +1315,36 @@ function initShiftPanel() {
 // ---------------------------------------------------------------------------
 // Export KMZ
 // ---------------------------------------------------------------------------
-async function exportKmz() {
+// Opens the Export modal — the route name lives only here now, filled in from state.routeName
+// right before it's needed, rather than as a field the toolbar carries at all times.
+function exportKmz() {
   if (!state.mission) { setStatus('No route loaded.'); return; }
-  const buf = await state.mission.toBuffer('browser');
-  const name = state.routeName || 'route-edited';
-  const result = await window.api.saveKmz(buf, name);
-  if (result) setStatus('Exported → ' + result.path);
+  $('export-route-name').value = state.routeName || 'route-edited';
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  $('export-modal').classList.remove('hidden');
+  setTimeout(() => { const inp = $('export-route-name'); if (inp) { inp.focus(); inp.select(); } }, 0);
+}
+
+async function confirmExportKmz() {
+  if (!state.mission) return;
+  const name = $('export-route-name').value.trim();
+  const v = validateRouteName(name);
+  if (!v.ok) { setStatus(v.message || 'Invalid route name.'); return; }
+  state.routeName = name;
+  setStatus('Packaging KMZ…');
+  try {
+    const buffer = await state.mission.toBuffer('browser');
+    const r = await window.api.saveKmz(buffer, name);
+    if (r) {
+      setDirty(false);
+      $('export-modal').classList.add('hidden');
+      setStatus('Exported: ' + r.path + ' — ready to upload to FlightHub 2.');
+    } else {
+      setStatus('Export cancelled.');
+    }
+  } catch (e) {
+    setStatus('Export failed: ' + e.message);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1272,6 +1361,8 @@ async function resetSession() {
   if (cesiumOK) {
     stopFpvLoop();
     fpvKeys.clear();
+    stopMapMoveLoop();
+    mapMoveKeys.clear();
     viewer.entities.removeAll();
     state.entities.points = [];
     state.entities.lines = [];
@@ -1312,7 +1403,6 @@ async function resetSession() {
   exitPlacingWaypoint();
 
   // Reset all UI controls to their initial state
-  $('route-name').value = 'route-edited';
   const fpvCb = $('fpv'); if (fpvCb) fpvCb.checked = false;
   if (cesiumOK) enableDefaultImagery(); // back to the plain-map default until a model is loaded again
   $('fpv-hint').classList.add('hidden');
@@ -1489,7 +1579,6 @@ async function applyRoute(res) {
   }
   state.routePath = res.path || null;
   state.routeName = res.name + '-edited';
-  $('route-name').value = state.routeName;
   state.selected = -1;
   $('viewer-empty').classList.add('hidden');
   setDirty(false);
@@ -1642,6 +1731,23 @@ function selectWaypoint(index, opts = {}) {
   renderPhotos(index);
   highlightWaypoint(index, opts);
   if (state.fpv) updateFpvOverlay();
+}
+
+// Clear the current waypoint selection — clicking the model/empty space does this, and it's what
+// hands plain arrow keys back to camera panning (see the keydown handler: list-walk only runs
+// with a waypoint selected).
+function deselectWaypoint() {
+  if (state.selected === -1) return;
+  if (aimDraft) revertAim();
+  state.selected = -1;
+  state.aimShot = 0;
+  state.editingShotName = null;
+  $('sel-idx').textContent = 'none';
+  document.querySelectorAll('#wp-body tr').forEach((tr) => tr.classList.remove('sel'));
+  renderImageInfo(null);
+  renderWpActions(null);
+  renderPhotos();
+  if (cesiumOK) drawWaypoints();
 }
 
 // A shot's planned name/label must be safe for FlightHub the same way a route name is (no
@@ -2936,7 +3042,6 @@ async function confirmCreateRoute() {
   // applyRoute appends "-edited" (meant for an opened existing route) — a brand-new route has
   // nothing to be "edited" from, so restore the clean typed name.
   state.routeName = name;
-  $('route-name').value = name;
   state.aircraftIrOverride = imageFormat.includes('ir');
   renderCameraSettingsRow();
   // applyRoute's height-mode auto-detect looks at the tallest waypoint height to guess ALT vs.
@@ -2982,7 +3087,6 @@ async function discardRoute() {
   state.takeOffRefAltitude = null;
   shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0; appliedPresetKey = null;
   $('shift-panel').classList.add('hidden');
-  $('route-name').value = 'route-edited';
   $('viewer-empty').classList.remove('hidden');
   if (cesiumOK) {
     state.entities.points.forEach((e) => viewer.entities.remove(e));
@@ -3518,29 +3622,6 @@ function makeThumb(p, allPhotos, idx) {
   fig.appendChild(cap);
 
   return fig;
-}
-
-// ---------------------------------------------------------------------------
-// Export
-// ---------------------------------------------------------------------------
-async function exportRoute() {
-  if (!state.mission) return;
-  const name = ($('route-name').value || state.routeName).trim();
-  const v = validateRouteName(name);
-  if (!v.ok) { setStatus(v.message || 'Invalid route name.'); return; }
-  setStatus('Packaging KMZ…');
-  try {
-    const buffer = await state.mission.toBuffer('renderer');
-    const r = await window.api.saveKmz(buffer, name);
-    if (r) {
-      setDirty(false);
-      setStatus('Exported: ' + r.path + ' — ready to upload to FlightHub 2.');
-    } else {
-      setStatus('Export cancelled.');
-    }
-  } catch (e) {
-    setStatus('Export failed: ' + e.message);
-  }
 }
 
 document.addEventListener('DOMContentLoaded', boot);

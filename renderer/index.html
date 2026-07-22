@@ -29,9 +29,9 @@
       Route View <span class="sub">offline route viewer</span>
     </div>
     <div class="actions">
-      <!-- Open dropdown -->
-      <div class="dropdown" id="dd-open">
-        <button class="btn dropdown-toggle">Open ▾</button>
+      <!-- File: everything from opening/loading through exporting/resetting -->
+      <div class="dropdown" id="dd-file">
+        <button class="btn dropdown-toggle">File ▾</button>
         <div class="dropdown-menu">
           <button class="dropdown-item" id="btn-sessions">Sessions…</button>
           <button class="dropdown-item" id="btn-new-window">New window…</button>
@@ -44,49 +44,52 @@
           <button class="dropdown-item load-all-item" id="btn-load-all">Load all…</button>
           <div class="dropdown-divider"></div>
           <button class="dropdown-item" id="btn-new-route" disabled title="Load a 3D model first — new waypoints are placed by clicking on it">Create new route…</button>
-        </div>
-      </div>
-
-      <!-- Route dropdown -->
-      <div class="dropdown" id="dd-route">
-        <button class="btn dropdown-toggle">Route ▾</button>
-        <div class="dropdown-menu">
+          <div class="dropdown-divider"></div>
           <button class="dropdown-item" id="btn-uniquify">Uniquify WP names</button>
           <button class="dropdown-item" id="btn-rename-photos">Rename matched photos</button>
           <button class="dropdown-item" id="btn-shift">Shift route (RTK re-base)…</button>
-          <button class="dropdown-item" id="btn-export">Export KMZ</button>
+          <button class="dropdown-item" id="btn-export">Export KMZ…</button>
           <div class="dropdown-divider"></div>
           <button class="dropdown-item danger" id="btn-reset">Reset session</button>
+        </div>
+      </div>
+
+      <!-- View: display toggles, height reference, text size — nothing here touches route data -->
+      <div class="dropdown" id="dd-view">
+        <button class="btn dropdown-toggle">View ▾</button>
+        <div class="dropdown-menu view-menu">
+          <label class="view-row" title="Show online satellite imagery"><input type="checkbox" id="imagery" /> Satellite</label>
+          <label class="view-row" title="Overlay place names, roads, and borders on the satellite imagery (hybrid view)"><input type="checkbox" id="imagery-labels" /> Labels</label>
+          <label class="view-row" title="Camera view (FPV) — Shift+F"><input type="checkbox" id="fpv" /> FPV</label>
+          <div class="dropdown-divider"></div>
+          <div class="view-row view-row-wrap" title="How the route's heights are read for 3D placement">
+            <span>Height</span>
+            <select id="height-mode" class="topbar-select">
+              <option value="absolute">Absolute</option>
+              <option value="alt">ALT (+ground)</option>
+              <option value="asl">ASL</option>
+            </select>
+            <input id="ground-alt" class="topbar-num" type="text" inputmode="decimal" placeholder="ground m" title="Takeoff ground altitude (m), for ALT" style="display:none" />
+            <button id="ground-auto" class="btn btn-icon" title="Read the ground altitude from the loaded 3D model" style="display:none">Auto</button>
+          </div>
+          <div class="view-row">
+            <span>Units</span>
+            <button id="height-unit" class="btn btn-icon" title="Toggle height display units (metres / feet)">m</button>
+          </div>
+          <div class="dropdown-divider"></div>
+          <div class="view-row">
+            <span>Text size</span>
+            <div class="font-ctrl" title="Font size">
+              <button id="btn-font-down" class="btn btn-icon" title="Smaller text">A−</button>
+              <button id="btn-font-up" class="btn btn-icon" title="Larger text">A+</button>
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- Global undo / redo (all route edits: aim, height, shift, renames) -->
       <button id="btn-undo" class="btn btn-icon" disabled title="Undo (Ctrl+Z)">↶</button>
       <button id="btn-redo" class="btn btn-icon" disabled title="Redo (Ctrl+Y)">↷</button>
-
-      <label class="topbar-toggle" title="Show online satellite imagery"><input type="checkbox" id="imagery" /> Satellite</label>
-      <label class="topbar-toggle" title="Overlay place names, roads, and borders on the satellite imagery (hybrid view)"><input type="checkbox" id="imagery-labels" /> Labels</label>
-      <label class="topbar-toggle" title="Camera view (FPV) — Shift+F"><input type="checkbox" id="fpv" /> FPV</label>
-      <label class="topbar-toggle" title="How the route's heights are read for 3D placement">Height
-        <select id="height-mode" class="topbar-select">
-          <option value="absolute">Absolute</option>
-          <option value="alt">ALT (+ground)</option>
-          <option value="asl">ASL</option>
-        </select>
-      </label>
-      <input id="ground-alt" class="topbar-num" type="text" inputmode="decimal" placeholder="ground m" title="Takeoff ground altitude (m), for ALT" style="display:none" />
-      <button id="ground-auto" class="btn btn-icon" title="Read the ground altitude from the loaded 3D model" style="display:none">Auto</button>
-      <button id="height-unit" class="btn btn-icon" title="Toggle height display units (metres / feet)">m</button>
-
-      <span class="spacer"></span>
-
-      <label class="namefield">Route name
-        <textarea id="route-name" rows="1" placeholder="route-name" spellcheck="false" wrap="off" title="Drag the right edge to widen"></textarea>
-      </label>
-      <div class="font-ctrl" title="Font size">
-        <button id="btn-font-down" class="btn btn-icon" title="Smaller text">A−</button>
-        <button id="btn-font-up" class="btn btn-icon" title="Larger text">A+</button>
-      </div>
     </div>
   </header>
 
@@ -380,6 +383,27 @@
       <div class="newroute-footer">
         <button class="btn" id="newroute-cancel">Cancel</button>
         <button class="btn primary" id="newroute-create">Create &amp; start placing waypoints</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export KMZ: the route name only shows up here now, right before it's actually used to name
+       the saved file — not as a persistent toolbar field. -->
+  <div id="export-modal" class="session-modal hidden">
+    <div class="session-dialog newroute-dialog">
+      <div class="session-header">
+        <span>Export KMZ</span>
+        <button id="export-modal-close" class="session-close-btn">✕</button>
+      </div>
+      <div class="newroute-body">
+        <label class="newroute-field">
+          <span class="newroute-label">Route name</span>
+          <input type="text" id="export-route-name" class="newroute-input" placeholder="route-edited" autocomplete="off" />
+        </label>
+      </div>
+      <div class="newroute-footer">
+        <button class="btn" id="export-cancel">Cancel</button>
+        <button class="btn primary" id="export-confirm">Export…</button>
       </div>
     </div>
   </div>
