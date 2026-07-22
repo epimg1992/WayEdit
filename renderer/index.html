@@ -433,31 +433,33 @@
       </div>
       <div class="compare-body">
         <p class="compare-hint">
-          Fly the <b>same waypoint</b> (e.g. WP0, straight down) under each RTK source, then load both here.
-          Click a patch of <b>flat, textured ground</b> visible in both images — a pad edge, a painted mark —
-          and drag a box over it. Avoid tall vessels/trucks (parallax throws the match off).
+          Fly the <b>same waypoint</b> under each RTK source — <b>high (20–30 m) and nadir over flat, textured
+          ground</b> (gravel, curb, painted marks). You do <b>not</b> need the dock in frame; flying low over the
+          truck/dock ruins the match (parallax + the frames stop overlapping). <b>Auto:</b> drag a box over a
+          common ground patch. <b>Manual pick:</b> click the same ground point in each image — use this when the
+          offset is large or the frames barely overlap.
         </p>
         <div class="compare-panes">
           <div class="compare-pane">
-            <div class="compare-pane-head"><span class="compare-tag tag-local">LOCAL</span> <span id="cmp-a-name" class="compare-fname">— no photo —</span></div>
+            <div class="compare-pane-head"><span class="compare-tag tag-local" id="cmp-a-tag">Photo 1</span> <span id="cmp-a-name" class="compare-fname">— no photo —</span></div>
             <div class="compare-canvas-wrap">
               <canvas id="cmp-a-canvas" class="compare-canvas"></canvas>
-              <div id="cmp-a-empty" class="compare-empty">Pick the LOCAL photo</div>
+              <div id="cmp-a-empty" class="compare-empty">Pick the first photo</div>
             </div>
-            <button class="btn" id="cmp-a-pick">Pick LOCAL photo…</button>
+            <button class="btn" id="cmp-a-pick">Pick photo 1…</button>
           </div>
           <div class="compare-pane">
-            <div class="compare-pane-head"><span class="compare-tag tag-dock">DOCK</span> <span id="cmp-b-name" class="compare-fname">— no photo —</span></div>
+            <div class="compare-pane-head"><span class="compare-tag tag-dock" id="cmp-b-tag">Photo 2</span> <span id="cmp-b-name" class="compare-fname">— no photo —</span></div>
             <div class="compare-canvas-wrap">
               <canvas id="cmp-b-canvas" class="compare-canvas"></canvas>
-              <div id="cmp-b-empty" class="compare-empty">Pick the DOCK photo</div>
+              <div id="cmp-b-empty" class="compare-empty">Pick the second photo</div>
             </div>
-            <button class="btn" id="cmp-b-pick">Pick DOCK photo…</button>
+            <button class="btn" id="cmp-b-pick">Pick photo 2…</button>
           </div>
         </div>
 
         <table class="compare-meta" id="cmp-meta">
-          <thead><tr><th>Field</th><th class="tag-local-th">LOCAL</th><th class="tag-dock-th">DOCK</th><th>Δ</th></tr></thead>
+          <thead><tr><th>Field</th><th class="tag-local-th" id="cmp-th-a">Photo 1</th><th class="tag-dock-th" id="cmp-th-b">Photo 2</th><th>Δ</th></tr></thead>
           <tbody id="cmp-meta-body"></tbody>
         </table>
 
@@ -465,6 +467,10 @@
           <label class="compare-ctrl" title="Height above the ground you photographed — defaults to the photo's relative altitude. Used to scale pixels → metres.">
             <span>Height above ground (<span class="cmp-unit">m</span>)</span>
             <input type="number" id="cmp-height" step="0.1" class="newroute-input" />
+          </label>
+          <label class="compare-ctrl">
+            <span>Match mode</span>
+            <label class="cmp-manual-lbl"><input type="checkbox" id="cmp-manual" /> Manual pick (click same point in each)</label>
           </label>
           <button class="btn primary" id="cmp-match" disabled>Match ground patch → offset</button>
           <span id="cmp-match-status" class="compare-status"></span>
@@ -483,6 +489,31 @@
             <button class="btn" id="cmp-save">Save as preset</button>
             <button class="btn" id="cmp-copy">Copy E/N/U</button>
             <button class="btn primary" id="cmp-apply">Apply to route (Shift)</button>
+          </div>
+
+          <!-- Alternative to shifting the route: correct the DOCK base coordinate so the dock frame
+               matches LOCAL. Corrected base = current base − offset (the dual of the route shift).
+               Heights here are metres/ellipsoid, matching FH2's dock RTK base entry — NOT unit-toggled. -->
+          <div class="compare-dockbase">
+            <div class="compare-dockbase-h">Or correct the dock base instead of the route <span class="cmp-exp">field test</span></div>
+            <p class="compare-result-note">
+              Enter the dock’s <b>CONVERGED</b> base — the values already shown on the dock’s
+              “Manually Calibrated Coordinates” screen (WGS84 ellipsoid). The app nudges them by the offset
+              and returns the base to type back in, so the dock frame matches the reference source — no route shift, no KMZ
+              re-upload. Corrected = converged − offset (a ~1 m nudge, well inside the dock’s 50 m gate).
+              <b>Do not</b> use photo, report, or waypoint coordinates as the base — that trips error 341003.
+              Per deployment (the dock re-surveys each time).
+            </p>
+            <div class="compare-dockbase-in">
+              <label>Converged longitude<input type="number" id="cmp-base-lon" step="0.000000001" class="newroute-input" placeholder="e.g. -101.720374810" /></label>
+              <label>Converged latitude<input type="number" id="cmp-base-lat" step="0.000000001" class="newroute-input" placeholder="e.g. 32.144598760" /></label>
+              <label>Converged ellipsoid height (m)<input type="number" id="cmp-base-h" step="0.01" class="newroute-input" placeholder="e.g. 842.2" /></label>
+              <button class="btn primary" id="cmp-base-calc">Compute corrected base</button>
+            </div>
+            <div class="compare-dockbase-out hidden" id="cmp-base-out">
+              <span>Type into dock → Longitude <b id="cmp-base-out-lon">—</b> · Latitude <b id="cmp-base-out-lat">—</b> · Ellipsoid <b id="cmp-base-out-h">—</b></span>
+              <button class="btn" id="cmp-base-copy">Copy</button>
+            </div>
           </div>
         </div>
       </div>

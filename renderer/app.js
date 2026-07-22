@@ -1326,8 +1326,9 @@ function initShiftPanel() {
 // (apply to a LOCAL-authored route so it flies correctly under the dock's RTK), so it drops straight
 // into Shift route / the saved-offset presets.
 const CMP_WORK_W = 720;        // working resolution for display + matching (px wide)
-const cmpState = { a: null, b: null };
+const cmpState = { a: null, b: null, manual: false };
 let cmpResult = null;          // { e, n, u, uKnown, ncc } in metres
+let cmpBaseOut = null;         // { lat, lon, h } corrected dock base from the last compute
 
 // Great-circle distance in metres — mirrors the coworker's photo_distance.py (same Earth radius),
 // so the metadata separations here match the numbers that tool reports.
@@ -1348,6 +1349,19 @@ function openCompareModal() {
   $('compare-modal').classList.remove('hidden');
 }
 
+// The RTK source (LOCAL / POLARIS / DOCK) isn't recorded in the photo's metadata, so infer it from
+// the file path (the operator names capture folders by source). Only accept an UNambiguous hit —
+// a path mentioning two sources (e.g. "DOCK~POLARIS") falls back to the positional Photo 1/2 label.
+function cmpDetectService(s) {
+  s = (s || '').toUpperCase();
+  const hits = ['LOCAL', 'POLARIS', 'DOCK'].filter((t) => s.includes(t));
+  return hits.length === 1 ? hits[0] : null;
+}
+function cmpLabel(which) {
+  const p = cmpState[which];
+  return (p && p.label) || (which === 'a' ? 'Photo 1' : 'Photo 2');
+}
+
 // Decode an image to a working-resolution grayscale buffer for matching.
 function cmpGrayscale(img) {
   const W = CMP_WORK_W, H = Math.max(1, Math.round(W * img.naturalHeight / img.naturalWidth));
@@ -1359,18 +1373,27 @@ function cmpGrayscale(img) {
   return { g, W, H };
 }
 
-// Draw a pane's image (scaled to CMP_WORK_W) plus any selection/match box overlay.
+// Draw a pane's image (scaled to CMP_WORK_W) plus its overlay: in auto mode a selection/match box,
+// in manual mode a crosshair at the clicked point.
 function cmpDrawPane(which) {
   const p = cmpState[which]; if (!p || !p.img) return;
   const canvas = $(which === 'a' ? 'cmp-a-canvas' : 'cmp-b-canvas');
   canvas.width = p.gray.W; canvas.height = p.gray.H;
   const ctx = canvas.getContext('2d');
   ctx.drawImage(p.img, 0, 0, canvas.width, canvas.height);
-  const box = which === 'a' ? p.box : p.matchBox;
-  if (box) {
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = which === 'a' ? '#4fd0e6' : '#f0a94c';
-    ctx.strokeRect(box.x, box.y, box.w, box.h);
+  const color = which === 'a' ? '#4fd0e6' : '#f0a94c';
+  if (cmpState.manual) {
+    if (p.point) {
+      ctx.strokeStyle = color; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(p.point.x - 13, p.point.y); ctx.lineTo(p.point.x + 13, p.point.y);
+      ctx.moveTo(p.point.x, p.point.y - 13); ctx.lineTo(p.point.x, p.point.y + 13);
+      ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.point.x, p.point.y, 7, 0, Math.PI * 2); ctx.stroke();
+    }
+  } else {
+    const box = which === 'a' ? p.box : p.matchBox;
+    if (box) { ctx.lineWidth = 2; ctx.strokeStyle = color; ctx.strokeRect(box.x, box.y, box.w, box.h); }
   }
 }
 
@@ -1381,7 +1404,11 @@ async function cmpPick(which) {
   const img = new Image();
   img.onload = () => {
     const gray = cmpGrayscale(img);
-    cmpState[which] = { path: res.path, name: res.name, meta: res.meta || {}, img, gray, box: null, matchBox: null };
+    const label = cmpDetectService(res.path) || (which === 'a' ? 'Photo 1' : 'Photo 2');
+    cmpState[which] = { path: res.path, name: res.name, meta: res.meta || {}, img, gray, box: null, matchBox: null, point: null, label };
+    // Reflect the detected source (or Photo 1/2) in the pane tag + metadata column header.
+    $(which === 'a' ? 'cmp-a-tag' : 'cmp-b-tag').textContent = label;
+    $(which === 'a' ? 'cmp-th-a' : 'cmp-th-b').textContent = label;
     $(which === 'a' ? 'cmp-a-name' : 'cmp-b-name').textContent = res.name;
     $(which === 'a' ? 'cmp-a-empty' : 'cmp-b-empty').classList.add('hidden');
     cmpDrawPane(which);
@@ -1397,7 +1424,8 @@ async function cmpPick(which) {
 }
 
 function updateCmpMatchEnabled() {
-  const ready = cmpState.a && cmpState.b && cmpState.a.box;
+  const ready = cmpState.a && cmpState.b &&
+    (cmpState.manual ? (cmpState.a.point && cmpState.b.point) : cmpState.a.box);
   $('cmp-match').disabled = !ready;
 }
 
@@ -1470,7 +1498,12 @@ function cmpMatchNCC(A, B, box, maxShift) {
 
 function cmpDoMatch() {
   const A = cmpState.a, B = cmpState.b;
-  if (!A || !B || !A.box) { setStatus('Load both photos and drag a box over common ground on the LOCAL image.'); return; }
+  if (!A || !B) { setStatus('Load both photos first.'); return; }
+  if (cmpState.manual) {
+    if (!A.point || !B.point) { setStatus('Click the same ground point on each photo.'); return; }
+  } else if (!A.box) {
+    setStatus('Drag a box over common ground on the LOCAL image (or switch to Manual pick).'); return;
+  }
   let H = parseFloat($('cmp-height').value);
   H = isNaN(H) ? NaN : fromDisp(H);
   if (isNaN(H) || H <= 0) { $('cmp-match-status').textContent = 'Enter a valid height above ground.'; return; }
@@ -1479,11 +1512,18 @@ function cmpDoMatch() {
   const mpp = 2 * H * Math.tan(hfov / 2) / CMP_WORK_W; // metres per working px (square GSD at nadir)
   $('cmp-match-status').textContent = 'Matching…';
   setTimeout(() => {
-    const maxShift = Math.min(180, Math.max(20, Math.round(4 / mpp))); // search up to ~4 m of offset
-    const best = cmpMatchNCC(A.gray, B.gray, A.box, maxShift);
-    // Show where it matched on B for visual confirmation.
-    B.matchBox = { x: A.box.x + best.ox, y: A.box.y + best.oy, w: A.box.w, h: A.box.h };
-    cmpDrawPane('b');
+    let best;
+    if (cmpState.manual) {
+      // Manual two-point pick: the shift is just the pixel delta between the matched points.
+      // No search window, so it handles arbitrarily large offsets and poor-overlap pairs.
+      best = { ncc: null, ox: B.point.x - A.point.x, oy: B.point.y - A.point.y };
+    } else {
+      const maxShift = Math.min(280, Math.max(20, Math.round(5 / mpp))); // search up to ~5 m of offset
+      best = cmpMatchNCC(A.gray, B.gray, A.box, maxShift);
+      // Show where it matched on B for visual confirmation.
+      B.matchBox = { x: A.box.x + best.ox, y: A.box.y + best.oy, w: A.box.w, h: A.box.h };
+      cmpDrawPane('b');
+    }
     // Pixel shift → ground (right/up relative to heading) → E/N.
     const psi = ((A.meta.gimbalYaw != null ? A.meta.gimbalYaw : (A.meta.flightYaw != null ? A.meta.flightYaw : 0)) * Math.PI) / 180;
     const right = best.ox * mpp, up = -best.oy * mpp;
@@ -1508,12 +1548,20 @@ function renderCmpResult() {
   $('cmp-de').textContent = toDisp(cmpResult.e).toFixed(2);
   $('cmp-dn').textContent = toDisp(cmpResult.n).toFixed(2);
   $('cmp-du').textContent = cmpResult.uKnown ? toDisp(cmpResult.u).toFixed(2) : 'n/a';
-  const quality = cmpResult.ncc > 0.6 ? 'strong' : cmpResult.ncc > 0.35 ? 'moderate' : 'weak — re-pick a flatter, more textured patch';
   const notes = [];
-  notes.push(`Match confidence: ${quality} (NCC ${cmpResult.ncc.toFixed(2)}).`);
-  notes.push('This is a LOCAL→DOCK vector: apply it to this LOCAL route so it flies correctly under the dock’s RTK.');
+  if (cmpResult.ncc == null) {
+    notes.push('Measured from two manual picks — accurate only if you clicked the exact same GROUND point in each (avoid the top of the truck/dock: parallax inflates the shift).');
+  } else {
+    const quality = cmpResult.ncc > 0.6 ? 'strong' : cmpResult.ncc > 0.35 ? 'moderate' : 'weak — re-pick a flatter, more textured patch, or use Manual pick';
+    notes.push(`Match confidence: ${quality} (NCC ${cmpResult.ncc.toFixed(2)}).`);
+  }
+  const labA = cmpLabel('a'), labB = cmpLabel('b');
+  notes.push(`This is a ${labA}→${labB} offset: apply it to a route authored under ${labA} so it flies correctly under ${labB}.`);
   if (!cmpResult.uKnown) notes.push('Vertical (ΔUp) needs absolute + relative altitude in both photos’ metadata — enter it manually in Shift route if missing.');
   $('cmp-result-note').textContent = notes.join(' ');
+  // A fresh offset invalidates any previously computed corrected dock base.
+  cmpBaseOut = null;
+  $('cmp-base-out').classList.add('hidden');
   $('cmp-result').classList.remove('hidden');
 }
 
@@ -1554,6 +1602,40 @@ function cmpCopy() {
   catch { setStatus(txt); }
 }
 
+// Corrected dock base = current surveyed base − offset. This is the dual of shifting the route:
+// moving the assumed base by −offset moves every reported (and thus flown) position by +offset,
+// so a LOCAL-authored route flies correctly under the dock with no per-route KMZ edit. The offset
+// is a local E/N/U in metres; convert to lat/lon degrees at the entered latitude. Heights are
+// metres/ellipsoid to match FH2's base entry (not the m/ft display toggle).
+function cmpComputeBase() {
+  if (!cmpResult) return;
+  const lat0 = parseFloat($('cmp-base-lat').value);
+  const lon0 = parseFloat($('cmp-base-lon').value);
+  const h0 = parseFloat($('cmp-base-h').value);
+  if (isNaN(lat0) || isNaN(lon0)) { setStatus('Enter the dock’s current base lat/lon (read from FH2 RTK settings).'); return; }
+  const dLat = cmpResult.n / 111320;
+  const dLon = cmpResult.e / (111320 * Math.cos(lat0 * Math.PI / 180));
+  const lat1 = lat0 - dLat;
+  const lon1 = lon0 - dLon;
+  const h1 = isNaN(h0) ? null : (h0 - (cmpResult.uKnown ? cmpResult.u : 0));
+  // 9 decimal places for lat/lon — the dock's calibration screen recommends 9 for accurate positioning.
+  $('cmp-base-out-lon').textContent = lon1.toFixed(9);
+  $('cmp-base-out-lat').textContent = lat1.toFixed(9);
+  $('cmp-base-out-h').textContent = h1 == null ? '(height n/a)' : h1.toFixed(3) + ' m';
+  cmpBaseOut = { lat: lat1, lon: lon1, h: h1 };
+  $('cmp-base-out').classList.remove('hidden');
+}
+
+function cmpCopyBase() {
+  if (!cmpBaseOut) return;
+  // Match the dock's field order/labels (Longitude, Latitude, Ellipsoid Height); one per line for
+  // easy field-by-field entry.
+  const txt = `Longitude ${cmpBaseOut.lon.toFixed(9)}\nLatitude ${cmpBaseOut.lat.toFixed(9)}`
+    + (cmpBaseOut.h != null ? `\nEllipsoid Height ${cmpBaseOut.h.toFixed(3)} m` : '');
+  try { navigator.clipboard.writeText(txt); setStatus('Copied corrected dock base (Lon/Lat/Ellipsoid).'); }
+  catch { setStatus(txt); }
+}
+
 function initCompare() {
   if (!$('compare-modal')) return;
   $('cmp-a-pick').onclick = () => cmpPick('a');
@@ -1564,35 +1646,53 @@ function initCompare() {
   $('cmp-apply').onclick = cmpApply;
   $('cmp-save').onclick = cmpSavePreset;
   $('cmp-copy').onclick = cmpCopy;
+  $('cmp-base-calc').onclick = cmpComputeBase;
+  $('cmp-base-copy').onclick = cmpCopyBase;
 
-  // Box selection on the LOCAL canvas (pointer drag).
-  const canvas = $('cmp-a-canvas');
-  let drag = null;
-  const toCanvas = (ev) => {
+  // Match mode toggle: auto (box + cross-correlation) vs manual (click the same point in each).
+  $('cmp-manual').onchange = () => {
+    cmpState.manual = $('cmp-manual').checked;
+    ['a', 'b'].forEach((k) => { if (cmpState[k]) { cmpState[k].box = null; cmpState[k].matchBox = null; cmpState[k].point = null; cmpDrawPane(k); } });
+    $('cmp-match').textContent = cmpState.manual ? 'Compute offset from picks' : 'Match ground patch → offset';
+    updateCmpMatchEnabled();
+  };
+
+  const toCanvas = (canvas, ev) => {
     const rect = canvas.getBoundingClientRect();
     return {
       x: (ev.clientX - rect.left) * (canvas.width / rect.width),
       y: (ev.clientY - rect.top) * (canvas.height / rect.height),
     };
   };
-  canvas.addEventListener('pointerdown', (ev) => {
+
+  // Box selection on the LOCAL canvas (auto mode, pointer drag). In manual mode a click on EITHER
+  // canvas drops/moves that pane's pick marker.
+  const canvasA = $('cmp-a-canvas'), canvasB = $('cmp-b-canvas');
+  let drag = null;
+  canvasA.addEventListener('pointerdown', (ev) => {
     if (!cmpState.a) return;
-    canvas.setPointerCapture(ev.pointerId);
-    drag = toCanvas(ev); cmpState.a.box = null;
+    if (cmpState.manual) { cmpState.a.point = toCanvas(canvasA, ev); cmpDrawPane('a'); updateCmpMatchEnabled(); return; }
+    canvasA.setPointerCapture(ev.pointerId);
+    drag = toCanvas(canvasA, ev); cmpState.a.box = null;
   });
-  canvas.addEventListener('pointermove', (ev) => {
-    if (!drag || !cmpState.a) return;
-    const p = toCanvas(ev);
+  canvasA.addEventListener('pointermove', (ev) => {
+    if (!drag || !cmpState.a || cmpState.manual) return;
+    const p = toCanvas(canvasA, ev);
     cmpState.a.box = { x: Math.min(drag.x, p.x), y: Math.min(drag.y, p.y), w: Math.abs(p.x - drag.x), h: Math.abs(p.y - drag.y) };
     cmpDrawPane('a');
   });
-  canvas.addEventListener('pointerup', () => {
+  canvasA.addEventListener('pointerup', () => {
+    if (cmpState.manual) return;
     drag = null;
     const b = cmpState.a && cmpState.a.box;
     if (b && (b.w < 20 || b.h < 20)) cmpState.a.box = null; // ignore stray clicks
-    if (cmpState.a) { cmpState.a.box && (cmpState.a.box = { x: Math.round(cmpState.a.box.x), y: Math.round(cmpState.a.box.y), w: Math.round(cmpState.a.box.w), h: Math.round(cmpState.a.box.h) }); }
+    if (cmpState.a && cmpState.a.box) cmpState.a.box = { x: Math.round(cmpState.a.box.x), y: Math.round(cmpState.a.box.y), w: Math.round(cmpState.a.box.w), h: Math.round(cmpState.a.box.h) };
     cmpDrawPane('a');
     updateCmpMatchEnabled();
+  });
+  canvasB.addEventListener('pointerdown', (ev) => {
+    if (!cmpState.b || !cmpState.manual) return;
+    cmpState.b.point = toCanvas(canvasB, ev); cmpDrawPane('b'); updateCmpMatchEnabled();
   });
 }
 
