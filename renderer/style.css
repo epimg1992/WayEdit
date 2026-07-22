@@ -623,7 +623,7 @@ figure.thumb figcaption.cap-edit {
 }
 .shift-fields input:focus { outline: none; border-color: var(--cyan); }
 .shift-updn { width: 26px; height: 22px; font-size: 10px; }
-.shift-total { font-family: var(--mono); font-size: 11px; color: var(--accent); white-space: nowrap; }
+.shift-total { font-family: var(--mono); font-size: 11px; color: var(--accent); overflow-wrap: break-word; }
 .shift-actions { display: flex; align-items: center; gap: 8px; }
 .shift-spacer { flex: 1; }
 .shift-btn {

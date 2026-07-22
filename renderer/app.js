@@ -126,6 +126,7 @@ function boot() {
   wireUi();
   renderImageInfo(null);
   renderWpActions(null);
+  if (window.api.onModelZipStatus) window.api.onModelZipStatus((msg) => setStatus(msg));
 }
 
 function initCesium() {
@@ -143,6 +144,10 @@ function initCesium() {
     infoBox: false,
     creditContainer: document.createElement('div'),
   });
+  // Set before anything below that gates on it (enableDefaultImagery, enableRealTerrain) — boot()
+  // only flips this to true AFTER initCesium() returns, which is too late for calls made from
+  // inside this function; they'd see cesiumOK still false and silently no-op every single boot.
+  cesiumOK = true;
   viewer.scene.globe.show = true;
   viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#11161d');
   viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a0d12');
@@ -281,6 +286,7 @@ function wireUi() {
   $('btn-new-window').onclick = () => { if (window.api.newSession) window.api.newSession(); };
   $('btn-open').onclick = openRoute;
   $('btn-model').onclick = openModel;
+  $('btn-model-zip').onclick = openModelZip;
   $('btn-photos').onclick = openPhotos;
   $('btn-load-all').onclick = loadAll;
   $('btn-uniquify').onclick = uniquifyWpNames;
@@ -1023,6 +1029,9 @@ function updateFilesBadge() {
 // route onto the structures, Done, then Export KMZ.
 // ---------------------------------------------------------------------------
 const shiftTotal = { e: 0, n: 0, u: 0 };
+let appliedPresetKey = null; // name of the saved offset last applied via the preset Apply button —
+                              // clicking Apply again for the SAME name is a no-op (prevents drift
+                              // from repeated clicks); applying a DIFFERENT preset still stacks.
 let renderShiftPresets = null; // set by initShiftPanel; re-rendered on unit toggle
 
 function openShiftPanel() {
@@ -1082,6 +1091,7 @@ function initShiftPanel() {
       const dE = -shiftTotal.e, dN = -shiftTotal.n, dU = -shiftTotal.u;
       applyShift(dE, dN, dU);
       shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0; // clear residual fp dust
+      appliedPresetKey = null; // route is back to unshifted — any preset can be applied fresh
       updateShiftReadout();
       pushHistory({
         label: 'route shift reset',
@@ -1122,21 +1132,29 @@ function initShiftPanel() {
     if (cur) sel.value = cur;
   };
   const selectedPreset = () => loadPresets().find((p) => p.name === $('shift-preset').value) || null;
-  const applyPreset = (sign, tag) => {
+  // One button, one direction per saved entry — pick "LOCAL → POLARIS" or "POLARIS → LOCAL" (both
+  // saved separately) rather than inverting a single preset with a second button. Re-clicking Apply
+  // for the SAME already-applied preset is a no-op, so mashing the button can't drift the route
+  // further each press; applying a different preset still stacks normally.
+  const applyPreset = () => {
     const p = selectedPreset();
     if (!p) { setStatus('Pick a saved offset first.'); return; }
     if (!state.mission) { setStatus('Open a route first.'); return; }
-    const dE = sign * p.e, dN = sign * p.n, dU = sign * p.u;
+    if (appliedPresetKey === p.name) {
+      setStatus(`"${p.name}" is already applied — Undo (Ctrl+Z) or Reset before reapplying it.`);
+      return;
+    }
+    const dE = p.e, dN = p.n, dU = p.u;
     applyShift(dE, dN, dU);
+    appliedPresetKey = p.name;
     pushHistory({
-      label: `offset "${p.name}"${tag}`,
-      undo: () => applyShift(-dE, -dN, -dU),
-      redo: () => applyShift(dE, dN, dU),
+      label: `offset "${p.name}"`,
+      undo: () => { applyShift(-dE, -dN, -dU); appliedPresetKey = null; },
+      redo: () => { applyShift(dE, dN, dU); appliedPresetKey = p.name; },
     });
-    setStatus(`Applied offset "${p.name}"${tag} — check alignment, then Export KMZ.`);
+    setStatus(`Applied offset "${p.name}" — check alignment, then Export KMZ.`);
   };
-  $('shift-apply-preset').onclick = () => applyPreset(1, '');
-  $('shift-apply-preset-inv').onclick = () => applyPreset(-1, ' (reversed)');
+  $('shift-apply-preset').onclick = applyPreset;
   $('shift-save-preset').onclick = () => {
     const name = $('shift-preset-name').value.trim();
     if (!name) { setStatus('Type a name for the offset (e.g. "Lavaca LOCAL→DOCK").'); return; }
@@ -1149,7 +1167,7 @@ function initShiftPanel() {
     storePresets(arr);
     renderPresets(name);
     $('shift-preset-name').value = '';
-    setStatus(`Saved offset "${name}" — reusable on any route via Apply / Apply ⇄.`);
+    setStatus(`Saved offset "${name}" — reusable on any route via Apply.`);
   };
   // Save a preset from TYPED E/N/U offsets (e.g. values measured from a photo test flight).
   // Fields are in the current display unit (m/ft); blank counts as 0.
@@ -1174,6 +1192,57 @@ function initShiftPanel() {
     storePresets(loadPresets().filter((x) => x.name !== p.name));
     renderPresets('');
   };
+
+  // The two network-frame presets from the RTK field test (average of the LOCAL→POLARIS
+  // measurements across Office/Rio Concho/Rio Rojo — regionally consistent within ~13 cm, per
+  // Finding 1 of the field test) live in data/rtk-presets.json, bundled with the app itself — not
+  // just in this browser's localStorage — so an accidental delete is always recoverable, even if
+  // localStorage itself were ever cleared. Hardcoded values here are only a last-resort fallback
+  // if that file can't be read for some reason.
+  const FALLBACK_RTK_DEFAULTS = [
+    { name: 'LOCAL → POLARIS', e: -1.35, n: 0.50, u: -1.20 },
+    { name: 'POLARIS → LOCAL', e: 1.35, n: -0.50, u: 1.20 },
+  ];
+  const rtkDefaults = async () => {
+    try {
+      const fromFile = await window.api.readRtkPresets();
+      if (Array.isArray(fromFile) && fromFile.length) return fromFile;
+    } catch {}
+    return FALLBACK_RTK_DEFAULTS;
+  };
+  $('shift-restore-defaults').onclick = async () => {
+    const defaults = await rtkDefaults();
+    const arr = loadPresets();
+    let added = 0;
+    defaults.forEach((d) => {
+      if (!arr.some((p) => p.name === d.name)) { arr.push(d); added++; }
+      else { const existing = arr.find((p) => p.name === d.name); existing.e = d.e; existing.n = d.n; existing.u = d.u; }
+    });
+    storePresets(arr);
+    renderPresets('');
+    setStatus(added ? `Restored ${added} default RTK offset${added === 1 ? '' : 's'} from file.` : 'Default RTK offsets refreshed from file.');
+  };
+
+  // Seed each default preset once ever (per-name flag, not one flag for the whole set) — so
+  // "LOCAL → POLARIS" getting deleted and auto-restored doesn't also block "POLARIS → LOCAL"
+  // from ever being independently restored later, and a deliberate delete after that one auto-
+  // restore still sticks. Covers the case where rtkOffsetsSeeded already ran on an earlier
+  // version of the app before this per-name tracking existed.
+  (async () => {
+    try {
+      const arr = loadPresets();
+      const defaults = await rtkDefaults();
+      let changed = false;
+      defaults.forEach((d) => {
+        const flag = 'rtkPresetSeeded:' + d.name;
+        if (localStorage.getItem(flag)) return;
+        if (!arr.some((p) => p.name === d.name)) { arr.push(d); changed = true; }
+        localStorage.setItem(flag, '1');
+      });
+      if (changed) { storePresets(arr); renderPresets(''); }
+    } catch {}
+  })();
+
   renderShiftPresets = renderPresets;
   renderPresets('');
 }
@@ -1195,7 +1264,7 @@ async function exportKmz() {
 async function resetSession() {
   if (!(await confirmDialog('Clear all loaded data and start a fresh session?'))) return;
 
-  shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0;
+  shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0; appliedPresetKey = null;
   $('shift-panel').classList.add('hidden');
   clearHistory();
 
@@ -1425,7 +1494,7 @@ async function applyRoute(res) {
   $('viewer-empty').classList.add('hidden');
   setDirty(false);
   // Fresh route = fresh shift baseline and fresh edit history (old entries reference old objects).
-  shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0;
+  shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0; appliedPresetKey = null;
   $('shift-panel').classList.add('hidden');
   updateShiftReadout();
   updateFilesBadge();
@@ -1462,6 +1531,16 @@ async function applyRoute(res) {
     (looksRelative ? ' · placed via ALT reference' : ''));
 }
 
+// Groups matched photos by shot rather than by file. DJI's file-counter (seqNum) is shared by
+// every band captured on the same shutter trigger — Visible+IR from one fixed-angle shot always
+// carry the same seqNum, different band letter. Photos with no seqNum (pano frames, video) don't
+// share a trigger with anything, so each counts as its own shot.
+function countDistinctShots(photos) {
+  const keys = new Set();
+  photos.forEach((p, i) => keys.add(p.seqNum != null ? `s${p.seqNum}` : `u${i}`));
+  return keys.size;
+}
+
 function renderList(query) {
   const body = $('wp-body');
   body.innerHTML = '';
@@ -1489,13 +1568,18 @@ function renderList(query) {
     tr.dataset.idx = wp.index;
     if (wp.index === state.selected) tr.classList.add('sel');
     const photos = state.photoByWp.get(wp.index) || [];
-    // With photos loaded: show how many matched this waypoint. Before loading: show how many
-    // photo ACTIONS are planned here — one fixed-angle shot counts as 1 even if it captures both
-    // Visible and IR (that split is a lens choice, decided in the Photo actions panel, not a
-    // second action) — styled dimmer.
+    // With photos loaded: show how many SHOTS were actually captured here — Visible+IR from the
+    // same shutter trigger share one DJI seqNum (confirmed: T/V bands of one shot always share a
+    // seqNum), so group by that rather than counting each image file. Without that, a single
+    // fixed-angle shot that captures both bands reads as "2 photos" and looks like a double
+    // capture. Photos with no seqNum (pano frames, video) each count on their own. Before photos
+    // load: show how many photo ACTIONS are planned here, same one-per-shot logic — styled dimmer.
     let cell = '';
     if (photosLoaded) {
-      if (photos.length) cell = `<span class="img-count">${photos.length}</span>`;
+      if (photos.length) {
+        const shotCount = countDistinctShots(photos);
+        cell = `<span class="img-count" title="${photos.length} image${photos.length === 1 ? '' : 's'} across ${shotCount} shot${shotCount === 1 ? '' : 's'}">${shotCount}</span>`;
+      }
     } else {
       const ex = wp.photoActions.length;
       if (ex) cell = `<span class="img-count expected" title="${ex} photo action${ex === 1 ? '' : 's'} planned at this waypoint">${ex}</span>`;
@@ -2626,6 +2710,23 @@ function enableDefaultImagery() {
   const labelsOk = ok && addLabelsLayer();
   const labelsCb = $('imagery-labels');
   if (labelsCb) labelsCb.checked = !!labelsOk;
+  if (cesiumOK) viewer.scene.screenSpaceCameraController.enableCollisionDetection = true;
+}
+
+// The Satellite/Labels backdrop and terrain-height matching are only useful before a model is
+// loaded — once the real 3D Tiles/mesh reconstruction is there, the bare-globe imagery is coarse
+// and now sits at roughly the model's own elevation (since terrain was corrected to match it), so
+// viewed at typical close-in editing distance it's seen edge-on: labels smear into an unreadable
+// wall of text, and Cesium's terrain-collision camera guard (tuned for that same coarse height)
+// stops the camera short of where the model actually needs it to go. Once a model loads there's no
+// reason to keep any of that in the way — the model itself is the ground truth from here on.
+function disableBackdropForModel() {
+  if (!cesiumOK) return;
+  if (state.imageryLayer) { viewer.imageryLayers.remove(state.imageryLayer); state.imageryLayer = null; }
+  removeLabelsLayer();
+  const cb = $('imagery'); if (cb) cb.checked = false;
+  const labelsCb = $('imagery-labels'); if (labelsCb) labelsCb.checked = false;
+  viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
 }
 
 function toggleImagery(e) {
@@ -2668,6 +2769,20 @@ async function openModel() {
   maybeSaveSession();
 }
 
+// Same as openModel(), but starting from FlightHub's downloaded .zip export instead of an
+// already-unzipped folder — main.js extracts it (skipping re-extraction if it's already been
+// unzipped here before) and reports progress via 'model-zip-status' while a large one runs.
+async function openModelZip() {
+  if (!cesiumOK) { setStatus('3D viewer unavailable in this session.'); return; }
+  setStatus('Opening model archive…');
+  const res = await window.api.openModelZip();
+  if (!res) return;
+  if (res.error) { setStatus(res.error); return; }
+  state.modelDir = res.dir || null;
+  await applyModel(res);
+  maybeSaveSession();
+}
+
 async function applyModel(res) {
   if (!res || !res.entry) {
     setStatus(`No tileset.json, glTF/GLB, or OBJ found under that folder (scanned 3 levels).`);
@@ -2686,6 +2801,7 @@ async function applyModel(res) {
       viewer.scene.primitives.add(tileset);
       await viewer.zoomTo(tileset);
       state.modelLoaded = true;
+      disableBackdropForModel();
       setStatus('3D Tiles model loaded at full detail. Waypoints sit at their true height over it.');
     } else {
       const wp0 = state.mission && state.mission.waypoints[0] && state.mission.waypoints[0].coordinates;
@@ -2698,6 +2814,7 @@ async function applyModel(res) {
       });
       viewer.scene.primitives.add(model);
       state.modelLoaded = true;
+      disableBackdropForModel();
       setStatus(`Mesh model loaded (${res.kind}). It is georeferenced to waypoint 0.`);
     }
   } catch (e) {
@@ -2863,7 +2980,7 @@ async function discardRoute() {
   state.photoByWp = new Map();
   state.routeBounds = null;
   state.takeOffRefAltitude = null;
-  shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0;
+  shiftTotal.e = 0; shiftTotal.n = 0; shiftTotal.u = 0; appliedPresetKey = null;
   $('shift-panel').classList.add('hidden');
   $('route-name').value = 'route-edited';
   $('viewer-empty').classList.remove('hidden');

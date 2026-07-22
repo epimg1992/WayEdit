@@ -1,0 +1,7 @@
+{
+  "_comment": "Saved RTK offset presets, bundled with the app so they survive an accidental delete from within Route View. Values are the average of the LOCAL -> POLARIS measurements across Office, Rio Concho, and Rio Rojo from the 2026-07-15 RTK field test (regionally consistent within ~13 cm across all three sites, per Finding 1 of the field test report). Units are metres. Loaded automatically on first run and available any time via the Shift route panel's 'Restore defaults' button.",
+  "presets": [
+    { "name": "LOCAL → POLARIS", "e": -1.35, "n": 0.50, "u": -1.20 },
+    { "name": "POLARIS → LOCAL", "e": 1.35, "n": -0.50, "u": 1.20 }
+  ]
+}

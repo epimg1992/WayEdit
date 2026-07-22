@@ -38,6 +38,7 @@
           <div class="dropdown-divider"></div>
           <button class="dropdown-item" id="btn-open">Open route</button>
           <button class="dropdown-item" id="btn-model">Load 3D model</button>
+          <button class="dropdown-item" id="btn-model-zip" title="Extract a FlightHub model export (.zip) into a sibling folder next to it, then load it — no manual unzip needed">Load 3D model (.zip)…</button>
           <button class="dropdown-item" id="btn-photos">Load mission photos</button>
           <div class="dropdown-divider"></div>
           <button class="dropdown-item load-all-item" id="btn-load-all">Load all…</button>
@@ -154,9 +155,9 @@
           <div class="shift-fields">
             <label>Step <input id="shift-step" type="text" inputmode="decimal" value="0.5" /><span id="shift-step-unit">m</span></label>
             <label>Up <button class="shift-nudge shift-updn" data-dz="1">▲</button><button class="shift-nudge shift-updn" data-dz="-1">▼</button></label>
-            <div class="shift-total">Applied&nbsp;<span id="shift-total">E 0.00 · N 0.00 · U 0.00</span></div>
           </div>
         </div>
+        <div class="shift-total">Applied&nbsp;<span id="shift-total">E 0.00 · N 0.00 · U 0.00</span></div>
         <div class="shift-actions">
           <button id="shift-reset" class="shift-btn" title="Undo the shift applied this session">Reset</button>
           <span class="shift-spacer"></span>
@@ -170,8 +171,7 @@
             <select id="shift-preset" class="shift-preset-sel"><option value="">— pick a saved offset —</option></select>
           </div>
           <div class="shift-presets-row">
-            <button id="shift-apply-preset" class="shift-btn" title="Apply the selected offset to this route (e.g. LOCAL → DOCK)">Apply</button>
-            <button id="shift-apply-preset-inv" class="shift-btn" title="Apply the selected offset REVERSED (e.g. DOCK → LOCAL)">Apply ⇄</button>
+            <button id="shift-apply-preset" class="shift-btn" title="Apply the selected offset to this route (pick the LOCAL→POLARIS or POLARIS→LOCAL entry for the direction you need)">Apply</button>
             <span class="shift-spacer"></span>
             <button id="shift-del-preset" class="shift-btn" title="Delete the selected saved offset">✕</button>
           </div>
@@ -184,6 +184,9 @@
             <input id="shift-new-n" class="shift-xyz" type="text" inputmode="decimal" placeholder="N" title="North offset (current unit)" />
             <input id="shift-new-u" class="shift-xyz" type="text" inputmode="decimal" placeholder="U" title="Up offset (current unit)" />
             <button id="shift-save-manual" class="shift-btn" title="Save a preset from typed E/N/U offsets (uses the name field above)">Add</button>
+          </div>
+          <div class="shift-presets-row">
+            <button id="shift-restore-defaults" class="shift-btn" title="Reload LOCAL → POLARIS and POLARIS → LOCAL from the app's bundled data/rtk-presets.json — use this if either was deleted by mistake">Restore defaults</button>
           </div>
         </div>
       </div>

@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('api', {
   openKmz:          () => ipcRenderer.invoke('open-kmz'),
   saveKmz:          (buffer, suggestedName) => ipcRenderer.invoke('save-kmz', { buffer, suggestedName }),
   openModel:        () => ipcRenderer.invoke('open-model'),
+  openModelZip:     () => ipcRenderer.invoke('open-model-zip'),
+  onModelZipStatus: (cb) => ipcRenderer.on('model-zip-status', (_e, msg) => cb(msg)),
   openPhotos:       () => ipcRenderer.invoke('open-photos'),
   renamePhoto:      (oldName, newName) => ipcRenderer.invoke('rename-photo', { oldName, newName }),
   // Sessions
@@ -22,4 +24,5 @@ contextBridge.exposeInMainWorld('api', {
   loadRecentModel:  (dir) => ipcRenderer.invoke('load-recent-model', dir),
   loadRecentPhotos: (dir) => ipcRenderer.invoke('load-recent-photos', dir),
   loadRecentRoute:  (filePath) => ipcRenderer.invoke('load-recent-route', filePath),
+  readRtkPresets:   () => ipcRenderer.invoke('read-rtk-presets'),
 });

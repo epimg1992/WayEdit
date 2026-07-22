@@ -6,6 +6,9 @@ const fsp = require('fs/promises');
 const { pathToFileURL } = require('url');
 const { Readable } = require('stream');
 const exifr = require('exifr');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileP = promisify(execFile);
 
 // Minimal content-type map for files served over appfile:// (needed when we build
 // our own Range responses for video seeking — net.fetch sets these for us otherwise).
@@ -332,6 +335,52 @@ ipcMain.handle('open-model', async (_e) => {
   return res;
 });
 
+// FlightHub's model export downloads as a .zip (often several GB — a real site reconstruction
+// runs ~10 GB). Extract with the OS's own tar/unzip rather than the jszip dependency used for
+// KMZ elsewhere: jszip reads the whole archive into memory, fine for a KMZ, not for a model this
+// size — tar/unzip stream straight to disk. Extracts into a sibling folder next to the zip, named
+// after it (matches how the operator already organizes a site's files in one Downloads folder).
+async function extractModelZip(zipPath, destDir, sender) {
+  await fsp.mkdir(destDir, { recursive: true });
+  if (sender) sender.send('model-zip-status', `Extracting ${path.basename(zipPath)} — large sites can take a few minutes…`);
+  if (process.platform === 'win32') {
+    // Bundled since Windows 10 1803, this is bsdtar (libarchive) and reads zip fine — but call it
+    // by its full System32 path rather than bare "tar": a bare name resolves through PATH, and on
+    // a machine with Git for Windows installed system-wide, Git's own GNU tar (no zip support) can
+    // sit ahead of System32 there and silently shadow the one that actually works.
+    const sysTar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    await execFileP(sysTar, ['-xf', zipPath, '-C', destDir]);
+  } else {
+    await execFileP('unzip', ['-o', zipPath, '-d', destDir]);
+  }
+}
+
+ipcMain.handle('open-model-zip', async (_e) => {
+  const r = await dialog.showOpenDialog(winOf(_e), {
+    title: 'Open 3D model archive (.zip, as downloaded from FlightHub)',
+    properties: ['openFile'],
+    filters: [{ name: 'Zip archive', extensions: ['zip'] }],
+  });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const zipPath = r.filePaths[0];
+  const destDir = path.join(path.dirname(zipPath), path.basename(zipPath, path.extname(zipPath)));
+
+  // Skip re-extracting if this zip was already unpacked here on a previous load — the common case
+  // for revisiting the same site.
+  let already = null;
+  try { already = await scanModelFromDir(destDir, _e.sender.id); } catch {}
+  if (!already || !already.entry) {
+    try {
+      await extractModelZip(zipPath, destDir, _e.sender);
+    } catch (e) {
+      return { error: 'Could not extract the zip (' + e.message + '). Extract it manually and use "Load 3D model" instead.' };
+    }
+  }
+  const res = await scanModelFromDir(destDir, _e.sender.id);
+  if (res && res.entry) await addRecent('models', destDir, path.basename(destDir));
+  return res;
+});
+
 // ---------------------------------------------------------------------------
 // IPC: mission photo folder
 // ---------------------------------------------------------------------------
@@ -502,4 +551,15 @@ ipcMain.handle('rename-photo', async (_e, { oldName, newName }) => {
     await fsp.rename(from, to);
     return { ok: true, name: newName };
   } catch (e) { return { error: e.message }; }
+});
+
+// Bundled RTK offset presets (data/rtk-presets.json) — a durable, in-repo backup of the saved
+// LOCAL<->POLARIS conversion, so an accidental delete from the Shift route panel can be reloaded
+// without re-typing or re-measuring anything.
+ipcMain.handle('read-rtk-presets', async () => {
+  try {
+    const raw = await fsp.readFile(path.join(__dirname, '..', 'data', 'rtk-presets.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.presets) ? parsed.presets : [];
+  } catch { return []; }
 });
