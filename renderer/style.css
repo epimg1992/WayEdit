@@ -570,8 +570,9 @@ figure.thumb figcaption.cap-edit {
 .compare-hint b { color: var(--ink); font-weight: 600; }
 .compare-panes { display: flex; gap: 12px; }
 .compare-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-.compare-pane-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.compare-fname { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compare-pane-head { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; }
+.compare-fname { color: var(--ink-dim); flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-all; line-height: 1.35; }
+.compare-tag { align-self: flex-start; }
 .compare-tag {
   font-family: var(--mono); font-size: 10px; letter-spacing: .1em; font-weight: 700;
   padding: 2px 7px; border-radius: 4px; flex: none;
@@ -619,9 +620,19 @@ figure.thumb figcaption.cap-edit {
 .compare-dockbase-in { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 .compare-dockbase-in label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--ink-dim); }
 .compare-dockbase-in .newroute-input { width: 160px; }
-.compare-dockbase-out { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--ink-dim); }
-.compare-dockbase-out b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.compare-dockbase-out { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--ink-dim); }
 .compare-dockbase-out.hidden { display: none; }
+.dockbase-hint { font-size: 11px; color: var(--ink-dim); margin-bottom: 2px; }
+.dockbase-field { display: flex; align-items: center; gap: 10px; }
+.dockbase-lbl { color: var(--ink-dim); font-size: 11px; min-width: 92px; flex: none; }
+.dockbase-field b { color: var(--ink); font-variant-numeric: tabular-nums; flex: 1; overflow-wrap: anywhere; }
+.icon-copy {
+  flex: none; background: #16202e; border: 1px solid var(--line); color: var(--ink-dim);
+  border-radius: 5px; cursor: pointer; padding: 4px 7px; display: inline-flex; align-items: center; line-height: 1;
+}
+.icon-copy:hover { color: var(--ink); border-color: var(--cyan); }
+.icon-copy svg { width: 14px; height: 14px; display: block; }
+.icon-copy.copied { color: #4fd0e6; border-color: #4fd0e6; }
 
 /* ---- click-to-place waypoint banner ---- */
 .placing-banner {

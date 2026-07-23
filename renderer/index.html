@@ -505,14 +505,16 @@
               Per deployment (the dock re-surveys each time).
             </p>
             <div class="compare-dockbase-in">
-              <label>Converged longitude<input type="number" id="cmp-base-lon" step="0.000000001" class="newroute-input" placeholder="e.g. -101.720374810" /></label>
-              <label>Converged latitude<input type="number" id="cmp-base-lat" step="0.000000001" class="newroute-input" placeholder="e.g. 32.144598760" /></label>
+              <label>Converged longitude<input type="number" id="cmp-base-lon" step="any" class="newroute-input" placeholder="e.g. -101.72077250041303" /></label>
+              <label>Converged latitude<input type="number" id="cmp-base-lat" step="any" class="newroute-input" placeholder="e.g. 31.98260944012345" /></label>
               <label>Converged ellipsoid height (m)<input type="number" id="cmp-base-h" step="0.01" class="newroute-input" placeholder="e.g. 842.2" /></label>
               <button class="btn primary" id="cmp-base-calc">Compute corrected base</button>
             </div>
             <div class="compare-dockbase-out hidden" id="cmp-base-out">
-              <span>Type into dock → Longitude <b id="cmp-base-out-lon">—</b> · Latitude <b id="cmp-base-out-lat">—</b> · Ellipsoid <b id="cmp-base-out-h">—</b></span>
-              <button class="btn" id="cmp-base-copy">Copy</button>
+              <div class="dockbase-hint">Type into the dock, one field at a time — copy each on its own:</div>
+              <div class="dockbase-field"><span class="dockbase-lbl">Longitude</span><b id="cmp-base-out-lon">—</b><button class="icon-copy" id="cmp-copy-lon" title="Copy longitude" aria-label="Copy longitude"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
+              <div class="dockbase-field"><span class="dockbase-lbl">Latitude</span><b id="cmp-base-out-lat">—</b><button class="icon-copy" id="cmp-copy-lat" title="Copy latitude" aria-label="Copy latitude"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
+              <div class="dockbase-field"><span class="dockbase-lbl">Ellipsoid (m)</span><b id="cmp-base-out-h">—</b><button class="icon-copy" id="cmp-copy-h" title="Copy ellipsoid height" aria-label="Copy ellipsoid height"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
             </div>
           </div>
         </div>

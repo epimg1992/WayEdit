@@ -174,6 +174,18 @@ function initCesium() {
     }
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
+  // Double-click a waypoint pin in the 3D view → jump straight into Camera View (FPV) at that shot,
+  // where its aim/zoom can be edited and its photo actions reviewed. Registering our own action here
+  // also replaces Cesium's default double-click "zoom to entity", which we don't want.
+  viewer.screenSpaceEventHandler.setInputAction((click) => {
+    if (state.placingWaypoint) return;
+    const picked = viewer.scene.pick(click.position);
+    if (picked && picked.id && typeof picked.id.wpIndex === 'number') {
+      selectWaypoint(picked.id.wpIndex);
+      enterFpv();
+    }
+  }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
   initFpvMouseLook();
 }
 
@@ -494,8 +506,10 @@ function wireUi() {
       $('fpv-overlay').classList.add('hidden'); // hide the green capture box + lens overlay
       stopFpvLoop(); fpvKeys.clear();
       setFpvMouseMode(false); // restore normal map mouse controls
+      // Leave the camera exactly where FPV left it — just widen the frustum back to a normal FOV so
+      // free navigation feels natural. (Intentionally NOT fitView(): exiting FPV should stay on the
+      // shot you were inspecting, not snap back to the top-down overview.)
       if (cesiumOK) { viewer.camera.frustum.fov = Cesium.Math.toRadians(60); }
-      fitView();
     }
   };
 
@@ -771,11 +785,12 @@ function initColResize() {
 }
 function enterFpv() {
   if (!cesiumOK) return;
-  $('fpv').checked = true;
-  state.fpv = true;
-  $('fpv-hint').classList.remove('hidden');
-  setFpvMouseMode(true);
-  applyFpv();
+  // Route through the FPV checkbox's own change handler so entering FPV (via double-click, Shift+F,
+  // etc.) runs the exact same full setup as ticking the box — aim editor, capture-box overlay, AGL
+  // readout, mouse-look, keyboard hints. If already in FPV, just re-aim to the newly selected shot.
+  const cb = $('fpv');
+  if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change')); }
+  else applyFpv();
 }
 
 // Capture zoom (focal mm) of the shot the aim editor is on — falls back to the waypoint's
@@ -1409,7 +1424,8 @@ async function cmpPick(which) {
     // Reflect the detected source (or Photo 1/2) in the pane tag + metadata column header.
     $(which === 'a' ? 'cmp-a-tag' : 'cmp-b-tag').textContent = label;
     $(which === 'a' ? 'cmp-th-a' : 'cmp-th-b').textContent = label;
-    $(which === 'a' ? 'cmp-a-name' : 'cmp-b-name').textContent = res.name;
+    const nameEl = $(which === 'a' ? 'cmp-a-name' : 'cmp-b-name');
+    nameEl.textContent = res.name; nameEl.title = res.name; // full name now wraps; tooltip too
     $(which === 'a' ? 'cmp-a-empty' : 'cmp-b-empty').classList.add('hidden');
     cmpDrawPane(which);
     // Default the height field from the first photo's relative altitude (height above takeoff).
@@ -1618,22 +1634,27 @@ function cmpComputeBase() {
   const lat1 = lat0 - dLat;
   const lon1 = lon0 - dLon;
   const h1 = isNaN(h0) ? null : (h0 - (cmpResult.uKnown ? cmpResult.u : 0));
-  // 9 decimal places for lat/lon — the dock's calibration screen recommends 9 for accurate positioning.
-  $('cmp-base-out-lon').textContent = lon1.toFixed(9);
-  $('cmp-base-out-lat').textContent = lat1.toFixed(9);
+  // 14 decimal places to match the precision FlightHub itself displays (e.g. -101.72077250041303) —
+  // the last digits are below survey significance but preserve the full value rather than truncating.
+  $('cmp-base-out-lon').textContent = lon1.toFixed(14);
+  $('cmp-base-out-lat').textContent = lat1.toFixed(14);
   $('cmp-base-out-h').textContent = h1 == null ? '(height n/a)' : h1.toFixed(3) + ' m';
   cmpBaseOut = { lat: lat1, lon: lon1, h: h1 };
   $('cmp-base-out').classList.remove('hidden');
 }
 
-function cmpCopyBase() {
+// Copy ONE dock-base field (the dock has three separate inputs, so copying all three at once can't
+// be pasted). Numbers only — no label, no unit — so they drop straight into the dock field.
+function cmpCopyField(which, btn) {
   if (!cmpBaseOut) return;
-  // Match the dock's field order/labels (Longitude, Latitude, Ellipsoid Height); one per line for
-  // easy field-by-field entry.
-  const txt = `Longitude ${cmpBaseOut.lon.toFixed(9)}\nLatitude ${cmpBaseOut.lat.toFixed(9)}`
-    + (cmpBaseOut.h != null ? `\nEllipsoid Height ${cmpBaseOut.h.toFixed(3)} m` : '');
-  try { navigator.clipboard.writeText(txt); setStatus('Copied corrected dock base (Lon/Lat/Ellipsoid).'); }
-  catch { setStatus(txt); }
+  let txt = null, label = '';
+  if (which === 'lon') { txt = cmpBaseOut.lon.toFixed(14); label = 'longitude'; }
+  else if (which === 'lat') { txt = cmpBaseOut.lat.toFixed(14); label = 'latitude'; }
+  else if (which === 'h') { txt = cmpBaseOut.h != null ? cmpBaseOut.h.toFixed(3) : null; label = 'ellipsoid height'; }
+  if (txt == null) return;
+  try { navigator.clipboard.writeText(txt); } catch {}
+  setStatus(`Copied ${label}: ${txt}`);
+  if (btn) { btn.classList.add('copied'); setTimeout(() => btn.classList.remove('copied'), 900); }
 }
 
 function initCompare() {
@@ -1647,7 +1668,9 @@ function initCompare() {
   $('cmp-save').onclick = cmpSavePreset;
   $('cmp-copy').onclick = cmpCopy;
   $('cmp-base-calc').onclick = cmpComputeBase;
-  $('cmp-base-copy').onclick = cmpCopyBase;
+  $('cmp-copy-lon').onclick = (e) => cmpCopyField('lon', e.currentTarget);
+  $('cmp-copy-lat').onclick = (e) => cmpCopyField('lat', e.currentTarget);
+  $('cmp-copy-h').onclick = (e) => cmpCopyField('h', e.currentTarget);
 
   // Match mode toggle: auto (box + cross-correlation) vs manual (click the same point in each).
   $('cmp-manual').onchange = () => {
