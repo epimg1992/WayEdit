@@ -609,6 +609,94 @@ async function readCompareMeta(full) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// IPC: Flight log — parse an Aloft/DJI-exported flight CSV into a compact track
+// for 3D playback. The .txt companion is DJI's encrypted binary record (not
+// parsed here); the CSV is the human-readable export uploaded from the DJI
+// controller. 232 columns, ~0.1 s cadence — we keep only what the viewer needs.
+// ---------------------------------------------------------------------------
+function parseCsvLine(line) {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { out.push(cur); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
+ipcMain.handle('open-flight-log', async (_e) => {
+  const r = await dialog.showOpenDialog(winOf(_e), {
+    title: 'Open flight log (Aloft / DJI CSV export)',
+    properties: ['openFile'],
+    filters: [{ name: 'Flight log', extensions: ['csv'] }],
+  });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const raw = await fsp.readFile(r.filePaths[0], 'utf8');
+  const lines = raw.split(/\r?\n/);
+  if (!lines.length) return { error: 'Empty file.' };
+  const header = parseCsvLine(lines[0]);
+  const col = (name) => header.indexOf(name);
+  const idx = {
+    fly: col('OSD.flyTime'), lat: col('OSD.latitude'), lon: col('OSD.longitude'),
+    alt: col('OSD.altitude [m]'), agl: col('OSD.height [m]'),
+    yaw: col('OSD.yaw [360]'), pitch: col('OSD.pitch'), roll: col('OSD.roll'),
+    gpitch: col('GIMBAL.pitch'), gyaw: col('GIMBAL.yaw [360]'),
+    speed: col('OSD.hSpeed [m/s]'), photos: col('CAMERA.photosTaken'),
+    onGround: col('OSD.isOnGround'),
+  };
+  if (idx.lat < 0 || idx.lon < 0 || idx.alt < 0) return { error: 'Not a recognized DJI/Aloft flight CSV (missing OSD.latitude/longitude/altitude).' };
+
+  const flySeconds = (s) => {
+    const m = /(\d+)m\s*([\d.]+)s/.exec(s || '');
+    if (m) return parseInt(m[1], 10) * 60 + parseFloat(m[2]);
+    const f = parseFloat(s); return isNaN(f) ? null : f;
+  };
+  const num = (v) => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+
+  const points = [];
+  let prevPhotos = null;
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    const f = parseCsvLine(lines[i]);
+    const lat = num(f[idx.lat]), lon = num(f[idx.lon]);
+    if (lat == null || lon == null || (Math.abs(lat) < 1e-4 && Math.abs(lon) < 1e-4)) continue;
+    const photos = idx.photos >= 0 ? num(f[idx.photos]) : null;
+    const photo = (photos != null && prevPhotos != null && photos > prevPhotos);
+    if (photos != null) prevPhotos = photos;
+    points.push({
+      t: flySeconds(f[idx.fly]) ?? (points.length * 0.1),
+      lat, lon,
+      alt: num(f[idx.alt]),                 // MSL metres
+      agl: idx.agl >= 0 ? num(f[idx.agl]) : null,
+      yaw: idx.yaw >= 0 ? num(f[idx.yaw]) : null,
+      gp: idx.gpitch >= 0 ? num(f[idx.gpitch]) : null,
+      spd: idx.speed >= 0 ? num(f[idx.speed]) : null,
+      onGround: idx.onGround >= 0 ? (f[idx.onGround] === 'True') : null,
+      photo,
+    });
+  }
+  // Meta from the DETAILS.* columns (constant across rows) — read from the last data row.
+  const last = lines.filter((l) => l).slice(-1)[0];
+  const lf = last ? parseCsvLine(last) : [];
+  const mget = (name) => { const c = col(name); return c >= 0 ? lf[c] : ''; };
+  const meta = {
+    aircraft: mget('DETAILS.aircraftName') || mget('RECOVER.aircraftName') || '',
+    date: (parseCsvLine(lines[1] || '')[col('CUSTOM.date [local]')]) || '',
+    totalTime: num(mget('DETAILS.totalTime [s]')),
+    distance: num(mget('DETAILS.totalDistance [m]')),
+    maxHeight: num(mget('DETAILS.maxHeight [m]')),
+    photoNum: num(mget('DETAILS.photoNum')),
+    name: path.basename(r.filePaths[0]),
+  };
+  return { points, meta };
+});
+
 ipcMain.handle('compare-pick-image', async (_e) => {
   const r = await dialog.showOpenDialog(winOf(_e), {
     title: 'Pick a photo to compare',

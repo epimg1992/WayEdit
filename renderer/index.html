@@ -40,6 +40,7 @@
           <button class="dropdown-item" id="btn-model">Load 3D model</button>
           <button class="dropdown-item" id="btn-model-zip" title="Extract a FlightHub model export (.zip) into a sibling folder next to it, then load it — no manual unzip needed">Load 3D model (.zip)…</button>
           <button class="dropdown-item" id="btn-photos">Load mission photos</button>
+          <button class="dropdown-item" id="btn-flightlog" title="Load an Aloft/DJI flight-log CSV and replay the flight as a 3D track on the model">Load flight log…</button>
           <div class="dropdown-divider"></div>
           <button class="dropdown-item load-all-item" id="btn-load-all">Load all…</button>
           <div class="dropdown-divider"></div>
@@ -520,6 +521,26 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- Flight-log playback: a video-style scrubber pinned to the bottom of the viewer. Shown when a
+       flight log is loaded; plays the drone marker along the 3D track over the flight timeline. -->
+  <div id="flight-panel" class="flight-panel hidden">
+    <div class="fl-row1">
+      <button class="fl-btn" id="fl-play" title="Play / pause (Space)">▶</button>
+      <div class="fl-speeds" id="fl-speeds">
+        <button class="fl-speed active" data-speed="1">1×</button>
+        <button class="fl-speed" data-speed="2">2×</button>
+        <button class="fl-speed" data-speed="4">4×</button>
+        <button class="fl-speed" data-speed="8">8×</button>
+        <button class="fl-speed" data-speed="16">16×</button>
+      </div>
+      <span class="fl-time" id="fl-time">0:00 / 0:00</span>
+      <span class="fl-info" id="fl-info">—</span>
+      <span class="fl-name" id="fl-name"></span>
+      <button class="fl-close" id="fl-close" title="Close flight log">✕</button>
+    </div>
+    <input type="range" id="fl-scrub" class="fl-scrub" min="0" max="1000" value="0" step="1" />
   </div>
 
   <script src="vendor/cesium/Cesium.js"></script>

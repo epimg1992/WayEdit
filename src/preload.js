@@ -26,4 +26,5 @@ contextBridge.exposeInMainWorld('api', {
   loadRecentRoute:  (filePath) => ipcRenderer.invoke('load-recent-route', filePath),
   readRtkPresets:   () => ipcRenderer.invoke('read-rtk-presets'),
   comparePickImage: () => ipcRenderer.invoke('compare-pick-image'),
+  openFlightLog:    () => ipcRenderer.invoke('open-flight-log'),
 });

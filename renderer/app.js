@@ -324,6 +324,7 @@ function wireUi() {
   $('btn-model').onclick = openModel;
   $('btn-model-zip').onclick = openModelZip;
   $('btn-photos').onclick = openPhotos;
+  $('btn-flightlog').onclick = openFlightLog;
   $('btn-load-all').onclick = loadAll;
   $('btn-uniquify').onclick = uniquifyWpNames;
   $('btn-rename-photos').onclick = renameMatchedPhotos;
@@ -334,6 +335,7 @@ function wireUi() {
   $('btn-new-route').onclick = openCreateRouteModal;
   initShiftPanel();
   initCompare();
+  initFlightPanel();
   updateFilesBadge();
   syncCreateRouteEnabled();
 
@@ -1720,6 +1722,203 @@ function initCompare() {
 }
 
 // ---------------------------------------------------------------------------
+// Flight-log playback — load an Aloft/DJI CSV, draw the flown track on the model,
+// and replay the drone along it with a video-style scrubber.
+// ---------------------------------------------------------------------------
+let flightState = null;   // { pts, meta, positions, t0, t1, time, playing, speed }
+let flightRaf = null, flightLastT = null, flightScanIdx = 0;
+const FLIGHT_SMOOTH_WIN = 15; // moving-average window (~1.5 s @ 10 Hz) — kills log jitter, keeps real path
+
+function fmtDur(s) {
+  s = Math.max(0, Math.round(s));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+// Boxcar moving average over a numeric series (nulls carried through the mean). Multiple passes
+// approximate a smoother (triangular/Gaussian) rolloff without over-rounding real maneuvers.
+function flightSmooth(arr, win, passes) {
+  const half = Math.floor(win / 2);
+  let a = arr;
+  for (let p = 0; p < (passes || 1); p++) {
+    const n = a.length, out = new Array(n);
+    for (let i = 0; i < n; i++) {
+      let s = 0, c = 0;
+      for (let j = Math.max(0, i - half); j <= Math.min(n - 1, i + half); j++) {
+        if (a[j] != null && isFinite(a[j])) { s += a[j]; c++; }
+      }
+      out[i] = c ? s / c : a[i];
+    }
+    a = out;
+  }
+  return a;
+}
+
+function clearFlight() {
+  if (flightRaf != null) { cancelAnimationFrame(flightRaf); flightRaf = null; }
+  flightLastT = null; flightScanIdx = 0;
+  if (cesiumOK) {
+    if (state.entities.flightPath) { viewer.entities.remove(state.entities.flightPath); state.entities.flightPath = null; }
+    if (state.entities.flightMarker) { viewer.entities.remove(state.entities.flightMarker); state.entities.flightMarker = null; }
+    (state.entities.flightPhotos || []).forEach((e) => viewer.entities.remove(e));
+    state.entities.flightPhotos = [];
+  }
+  flightState = null;
+  const p = $('flight-panel'); if (p) p.classList.add('hidden');
+}
+
+async function openFlightLog() {
+  if (!cesiumOK) { setStatus('3D view not ready yet.'); return; }
+  if (!window.api.openFlightLog) { setStatus('Flight log not available in this build.'); return; }
+  const res = await window.api.openFlightLog();
+  if (!res) return;
+  if (res.error) { setStatus(res.error); return; }
+  const pts = res.points || [];
+  if (pts.length < 2) { setStatus('Flight log has no usable GPS track.'); return; }
+  clearFlight();
+
+  // Keep only AIRBORNE samples. Long ground-idle stretches (the drone sitting on the pad) are just
+  // RTK/GPS drift — they draw a shaky blob on the ground and are most of the "zig-zag". Height above
+  // takeoff > 0.5 m (or the on-ground flag) marks real flight.
+  let track = pts.filter((p) => (p.agl != null ? p.agl > 0.5 : p.onGround === false));
+  if (track.length < 2) track = pts; // AGL/ground flags unreliable — fall back to the whole log
+
+  // Smooth lat/lon (two passes) — removes the residual log jitter while keeping the real path.
+  const lat = flightSmooth(track.map((p) => p.lat), FLIGHT_SMOOTH_WIN, 2);
+  const lon = flightSmooth(track.map((p) => p.lon), FLIGHT_SMOOTH_WIN, 2);
+  // Height from the RELATIVE altitude (AGL) — accurate and smooth, unlike the drifty absolute MSL —
+  // laid over the MODEL ground at the takeoff point so the track floats at its true height above the
+  // pad and never sinks under the surface (AGL clamped ≥ 0). Falls back to the geoid-based ground.
+  const aglS = flightSmooth(track.map((p) => (p.agl != null ? p.agl : 0)), FLIGHT_SMOOTH_WIN, 2);
+  let ground = (track[0].alt != null ? track[0].alt + GEOID_SEP : 0);
+  try {
+    if (viewer.scene.sampleHeightSupported && state.tileset) {
+      const carto = Cesium.Cartographic.fromDegrees(lon[0], lat[0]);
+      const sampled = await viewer.scene.sampleHeightMostDetailed([carto]);
+      const g = sampled && sampled[0] && sampled[0].height;
+      if (g != null && isFinite(g) && Math.abs(g - ground) < 80) ground = g;
+    }
+  } catch { /* sampling unsupported / takeoff off-model — keep geoid-based ground */ }
+
+  const positions = lat.map((la, i) => Cesium.Cartesian3.fromDegrees(lon[i], la, ground + Math.max(0, aglS[i])));
+  flightState = {
+    pts: track, meta: res.meta || {}, positions,
+    t0: track[0].t, t1: track[track.length - 1].t, time: track[0].t, playing: false, speed: 1,
+  };
+
+  state.entities.flightPath = viewer.entities.add({
+    polyline: {
+      positions, width: 3,
+      material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.18, color: Cesium.Color.fromCssColorString('#4fd0e6') }),
+    },
+  });
+  state.entities.flightMarker = viewer.entities.add({
+    position: positions[0],
+    point: {
+      pixelSize: 13, color: Cesium.Color.fromCssColorString('#ffcf33'),
+      outlineColor: Cesium.Color.fromCssColorString('#04121b'), outlineWidth: 2,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+  });
+  state.entities.flightPhotos = [];
+  track.forEach((p, i) => {
+    if (!p.photo) return;
+    state.entities.flightPhotos.push(viewer.entities.add({
+      position: positions[i],
+      point: { pixelSize: 7, color: Cesium.Color.fromCssColorString('#0fce00'), outlineColor: Cesium.Color.WHITE, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+    }));
+  });
+
+  const m = flightState.meta;
+  $('fl-name').textContent = [m.aircraft, m.name].filter(Boolean).join(' · ');
+  $('flight-panel').classList.remove('hidden');
+  flightSetTime(flightState.t0);
+  const extra = m.maxHeight != null ? `, max ${Math.round(m.maxHeight)} m AGL` : '';
+  setStatus(`Flight loaded: ${track.length} airborne points over ${fmtDur(flightState.t1 - flightState.t0)}${extra}. ${state.entities.flightPhotos.length} photo marks.`);
+  viewer.flyTo(state.entities.flightPath, { duration: 0.8 }).catch(() => {});
+}
+
+// Index of the track sample at/just before time t (cached scan — playback is monotonic).
+function flightIndexAt(t) {
+  const pts = flightState.pts;
+  if (t <= pts[flightScanIdx].t) flightScanIdx = 0; // scrubbed backwards
+  let i = flightScanIdx;
+  while (i < pts.length - 1 && pts[i + 1].t <= t) i++;
+  flightScanIdx = i;
+  return i;
+}
+
+function flightSetTime(t) {
+  if (!flightState) return;
+  t = Math.max(flightState.t0, Math.min(flightState.t1, t));
+  flightState.time = t;
+  const pts = flightState.pts, pos = flightState.positions;
+  const i = flightIndexAt(t);
+  const a = pts[i], b = pts[Math.min(i + 1, pts.length - 1)];
+  const span = (b.t - a.t) || 1;
+  const f = Math.max(0, Math.min(1, (t - a.t) / span));
+  const p = Cesium.Cartesian3.lerp(pos[i], pos[Math.min(i + 1, pos.length - 1)], f, new Cesium.Cartesian3());
+  if (state.entities.flightMarker) state.entities.flightMarker.position = p;
+  // readouts
+  const agl = a.agl != null ? a.agl : null;
+  const spd = a.spd != null ? a.spd : null;
+  const yaw = a.yaw != null ? a.yaw : null;
+  const u = hUnit();
+  const parts = [];
+  if (agl != null) parts.push(`${toDisp(agl).toFixed(1)} ${u} AGL`);
+  if (spd != null) parts.push(`${spd.toFixed(1)} m/s`);
+  if (yaw != null) parts.push(`yaw ${Math.round(yaw)}°`);
+  $('fl-info').textContent = parts.join(' · ') || '—';
+  $('fl-time').textContent = `${fmtDur(t - flightState.t0)} / ${fmtDur(flightState.t1 - flightState.t0)}`;
+  const scrub = $('fl-scrub');
+  const frac = (t - flightState.t0) / ((flightState.t1 - flightState.t0) || 1);
+  if (document.activeElement !== scrub) scrub.value = String(Math.round(frac * 1000));
+}
+
+function flightTick(now) {
+  if (!flightState || !flightState.playing) { flightRaf = null; return; }
+  if (flightLastT == null) flightLastT = now;
+  const dt = (now - flightLastT) / 1000; flightLastT = now;
+  let t = flightState.time + dt * flightState.speed;
+  if (t >= flightState.t1) { t = flightState.t1; flightState.playing = false; $('fl-play').textContent = '▶'; }
+  flightSetTime(t);
+  flightRaf = flightState.playing ? requestAnimationFrame(flightTick) : null;
+}
+
+function flightPlayPause() {
+  if (!flightState) return;
+  if (flightState.playing) { flightState.playing = false; $('fl-play').textContent = '▶'; return; }
+  if (flightState.time >= flightState.t1 - 0.01) flightState.time = flightState.t0; // restart from end
+  flightState.playing = true; $('fl-play').textContent = '⏸'; flightLastT = null;
+  if (flightRaf == null) flightRaf = requestAnimationFrame(flightTick);
+}
+
+function initFlightPanel() {
+  if (!$('flight-panel')) return;
+  $('fl-play').onclick = flightPlayPause;
+  $('fl-close').onclick = clearFlight;
+  document.querySelectorAll('#fl-speeds .fl-speed').forEach((btn) => {
+    btn.onclick = () => {
+      if (!flightState) return;
+      flightState.speed = parseFloat(btn.dataset.speed);
+      document.querySelectorAll('#fl-speeds .fl-speed').forEach((b) => b.classList.toggle('active', b === btn));
+      flightLastT = null;
+    };
+  });
+  $('fl-scrub').oninput = () => {
+    if (!flightState) return;
+    const frac = parseFloat($('fl-scrub').value) / 1000;
+    flightLastT = null; // resume playback smoothly from the new spot
+    flightSetTime(flightState.t0 + frac * (flightState.t1 - flightState.t0));
+  };
+  // Space toggles play when the flight panel is open (and not typing / not in FPV).
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || !flightState || $('flight-panel').classList.contains('hidden')) return;
+    if (isInputFocused() || state.fpv || state.placingWaypoint) return;
+    e.preventDefault(); flightPlayPause();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Export KMZ
 // ---------------------------------------------------------------------------
 // Opens the Export modal — the route name lives only here now, filled in from state.routeName
@@ -1765,6 +1964,7 @@ async function resetSession() {
   clearHistory();
 
   // Tear down the Cesium scene FIRST, while we still hold references to what's loaded.
+  clearFlight();
   if (cesiumOK) {
     stopFpvLoop();
     fpvKeys.clear();
