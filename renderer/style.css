@@ -201,8 +201,9 @@ td.ph { color: var(--cyan); text-align: right; }
 .voff input[type=range] { width: 200px; }
 #voff-val { color: var(--accent); }
 .viewer-empty {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  text-align: center; color: var(--ink-dim); padding: 40px; font-size: 13px; pointer-events: none;
+  position: absolute; right: 16px; bottom: 14px; max-width: 320px;
+  text-align: right; color: var(--ink-dim); font-size: 13px; line-height: 1.5;
+  pointer-events: none;
 }
 
 /* ---- image info panel ---- */

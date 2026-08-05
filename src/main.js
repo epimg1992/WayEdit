@@ -9,6 +9,7 @@ const exifr = require('exifr');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileP = promisify(execFile);
+const { parseUlog, isUlog } = require('./ulog');
 
 // Minimal content-type map for files served over appfile:// (needed when we build
 // our own Range responses for video seeking — net.fetch sets these for us otherwise).
@@ -632,12 +633,27 @@ function parseCsvLine(line) {
 
 ipcMain.handle('open-flight-log', async (_e) => {
   const r = await dialog.showOpenDialog(winOf(_e), {
-    title: 'Open flight log (Aloft / DJI CSV export)',
+    title: 'Open flight log (DJI/Aloft CSV or WingtraRay ULog)',
     properties: ['openFile'],
-    filters: [{ name: 'Flight log', extensions: ['csv'] }],
+    filters: [
+      { name: 'Flight log', extensions: ['csv', 'ulg'] },
+      { name: 'DJI / Aloft CSV', extensions: ['csv'] },
+      { name: 'WingtraRay ULog', extensions: ['ulg'] },
+    ],
   });
   if (r.canceled || !r.filePaths[0]) return null;
-  const raw = await fsp.readFile(r.filePaths[0], 'utf8');
+
+  // WingtraRay / PX4 ULog is a binary format — sniff the magic and branch.
+  const buf = await fsp.readFile(r.filePaths[0]);
+  if (isUlog(buf)) {
+    try {
+      return parseUlog(buf, path.basename(r.filePaths[0]));
+    } catch (err) {
+      return { error: 'Could not read this ULog file: ' + err.message };
+    }
+  }
+
+  const raw = buf.toString('utf8');
   const lines = raw.split(/\r?\n/);
   if (!lines.length) return { error: 'Empty file.' };
   const header = parseCsvLine(lines[0]);
