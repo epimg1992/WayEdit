@@ -46,8 +46,6 @@
           <div class="dropdown-divider"></div>
           <button class="dropdown-item" id="btn-new-route" disabled title="Load a 3D model first — new waypoints are placed by clicking on it">Create new route…</button>
           <div class="dropdown-divider"></div>
-          <button class="dropdown-item" id="btn-uniquify">Uniquify WP names</button>
-          <button class="dropdown-item" id="btn-rename-photos">Rename matched photos</button>
           <button class="dropdown-item" id="btn-shift">Shift route (RTK re-base)…</button>
           <button class="dropdown-item" id="btn-compare" title="Measure the LOCAL↔DOCK frame offset from two photos of the same waypoint">Compare RTK photos…</button>
           <button class="dropdown-item" id="btn-export">Export KMZ…</button>
@@ -259,6 +257,27 @@
         </div>
       </div>
       <div id="viewer-empty" class="viewer-empty">Open a route to begin. Load a 3D model to fly the waypoints over your reconstruction.</div>
+
+      <!-- Flight-log playback: a video-style scrubber pinned to the bottom of the viewer. Shown when a
+           flight log is loaded; plays the drone marker along the 3D track over the flight timeline.
+           Lives inside .viewer-pane so it stays within the 3D view and never overlaps the right rail. -->
+      <div id="flight-panel" class="flight-panel hidden">
+        <div class="fl-row1">
+          <button class="fl-btn" id="fl-play" title="Play / pause (Space)">▶</button>
+          <div class="fl-speeds" id="fl-speeds">
+            <button class="fl-speed active" data-speed="1">1×</button>
+            <button class="fl-speed" data-speed="2">2×</button>
+            <button class="fl-speed" data-speed="4">4×</button>
+            <button class="fl-speed" data-speed="8">8×</button>
+            <button class="fl-speed" data-speed="16">16×</button>
+          </div>
+          <span class="fl-time" id="fl-time">0:00 / 0:00</span>
+          <span class="fl-info" id="fl-info">—</span>
+          <span class="fl-name" id="fl-name"></span>
+          <button class="fl-close" id="fl-close" title="Close flight log">✕</button>
+        </div>
+        <input type="range" id="fl-scrub" class="fl-scrub" min="0" max="1000" value="0" step="1" />
+      </div>
     </section>
 
     <div class="col-handle" id="handle-right" title="Drag to resize"></div>
@@ -521,26 +540,6 @@
         </div>
       </div>
     </div>
-  </div>
-
-  <!-- Flight-log playback: a video-style scrubber pinned to the bottom of the viewer. Shown when a
-       flight log is loaded; plays the drone marker along the 3D track over the flight timeline. -->
-  <div id="flight-panel" class="flight-panel hidden">
-    <div class="fl-row1">
-      <button class="fl-btn" id="fl-play" title="Play / pause (Space)">▶</button>
-      <div class="fl-speeds" id="fl-speeds">
-        <button class="fl-speed active" data-speed="1">1×</button>
-        <button class="fl-speed" data-speed="2">2×</button>
-        <button class="fl-speed" data-speed="4">4×</button>
-        <button class="fl-speed" data-speed="8">8×</button>
-        <button class="fl-speed" data-speed="16">16×</button>
-      </div>
-      <span class="fl-time" id="fl-time">0:00 / 0:00</span>
-      <span class="fl-info" id="fl-info">—</span>
-      <span class="fl-name" id="fl-name"></span>
-      <button class="fl-close" id="fl-close" title="Close flight log">✕</button>
-    </div>
-    <input type="range" id="fl-scrub" class="fl-scrub" min="0" max="1000" value="0" step="1" />
   </div>
 
   <script src="vendor/cesium/Cesium.js"></script>

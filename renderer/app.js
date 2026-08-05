@@ -326,8 +326,6 @@ function wireUi() {
   $('btn-photos').onclick = openPhotos;
   $('btn-flightlog').onclick = openFlightLog;
   $('btn-load-all').onclick = loadAll;
-  $('btn-uniquify').onclick = uniquifyWpNames;
-  $('btn-rename-photos').onclick = renameMatchedPhotos;
   $('btn-shift').onclick = openShiftPanel;
   $('btn-compare').onclick = openCompareModal;
   $('btn-export').onclick = exportKmz;
@@ -1727,7 +1725,6 @@ function initCompare() {
 // ---------------------------------------------------------------------------
 let flightState = null;   // { pts, meta, positions, t0, t1, time, playing, speed }
 let flightRaf = null, flightLastT = null, flightScanIdx = 0;
-const FLIGHT_SMOOTH_WIN = 15; // moving-average window (~1.5 s @ 10 Hz) — kills log jitter, keeps real path
 
 function fmtDur(s) {
   s = Math.max(0, Math.round(s));
@@ -1782,13 +1779,19 @@ async function openFlightLog() {
   let track = pts.filter((p) => (p.agl != null ? p.agl > 0.5 : p.onGround === false));
   if (track.length < 2) track = pts; // AGL/ground flags unreliable — fall back to the whole log
 
-  // Smooth lat/lon (two passes) — removes the residual log jitter while keeping the real path.
-  const lat = flightSmooth(track.map((p) => p.lat), FLIGHT_SMOOTH_WIN, 2);
-  const lon = flightSmooth(track.map((p) => p.lon), FLIGHT_SMOOTH_WIN, 2);
+  // Adaptive smoothing window: the log rate varies (~8–10 Hz), and a fixed sample count under-smooths
+  // a slow/hovering drone. Size the boxcar to ~3 s of real time (odd, ≥ 9 samples) and run 3 passes so
+  // the rolloff is gentle-Gaussian — this is what actually kills the residual GPS wander that reads as
+  // zig-zag on a low inspection flight, while still following the true path.
+  const dur = track[track.length - 1].t - track[0].t;
+  const hz = dur > 0 ? track.length / dur : 10;
+  const win = Math.max(9, (Math.round(hz * 3) | 1)); // ~3 s, forced odd
+  const lat = flightSmooth(track.map((p) => p.lat), win, 3);
+  const lon = flightSmooth(track.map((p) => p.lon), win, 3);
   // Height from the RELATIVE altitude (AGL) — accurate and smooth, unlike the drifty absolute MSL —
   // laid over the MODEL ground at the takeoff point so the track floats at its true height above the
   // pad and never sinks under the surface (AGL clamped ≥ 0). Falls back to the geoid-based ground.
-  const aglS = flightSmooth(track.map((p) => (p.agl != null ? p.agl : 0)), FLIGHT_SMOOTH_WIN, 2);
+  const aglS = flightSmooth(track.map((p) => (p.agl != null ? p.agl : 0)), win, 3);
   let ground = (track[0].alt != null ? track[0].alt + GEOID_SEP : 0);
   try {
     if (viewer.scene.sampleHeightSupported && state.tileset) {
@@ -1800,6 +1803,22 @@ async function openFlightLog() {
   } catch { /* sampling unsupported / takeoff off-model — keep geoid-based ground */ }
 
   const positions = lat.map((la, i) => Cesium.Cartesian3.fromDegrees(lon[i], la, ground + Math.max(0, aglS[i])));
+
+  // Thin the DRAWN line: drop samples within ~0.5 m (3-D) of the last kept point so dense hover
+  // clusters collapse to a single vertex instead of a jittery scribble. Endpoints always kept.
+  // Playback/marker still use the full `positions`, so timing stays exact.
+  const MIN_SEG = 0.5;
+  const linePositions = positions.length ? [positions[0]] : [];
+  let lastKept = positions[0];
+  for (let i = 1; i < positions.length; i++) {
+    if (Cesium.Cartesian3.distance(positions[i], lastKept) >= MIN_SEG) {
+      linePositions.push(positions[i]); lastKept = positions[i];
+    }
+  }
+  if (positions.length > 1 && linePositions[linePositions.length - 1] !== positions[positions.length - 1]) {
+    linePositions.push(positions[positions.length - 1]);
+  }
+
   flightState = {
     pts: track, meta: res.meta || {}, positions,
     t0: track[0].t, t1: track[track.length - 1].t, time: track[0].t, playing: false, speed: 1,
@@ -1807,7 +1826,7 @@ async function openFlightLog() {
 
   state.entities.flightPath = viewer.entities.add({
     polyline: {
-      positions, width: 3,
+      positions: linePositions, width: 3,
       material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.18, color: Cesium.Color.fromCssColorString('#4fd0e6') }),
     },
   });
@@ -2031,141 +2050,6 @@ async function resetSession() {
   $('ph-count').textContent = '—';
   $('sel-idx').textContent = 'none';
   setStatus('Session cleared — open a route to begin.');
-}
-
-// ---------------------------------------------------------------------------
-// Rename matched photos on disk to embed the WP's unique fileSuffix
-// ---------------------------------------------------------------------------
-async function renameMatchedPhotos() {
-  if (!state.mission || !state.photos.length) {
-    setStatus('Load a route and photos first.');
-    return;
-  }
-
-  // Verify all WP photo-action names are unique — renaming is useless otherwise.
-  const shooterWps = state.mission.waypoints.filter((w) => w.hasPhotoAction);
-  const names = shooterWps.map((w) => w.photoActionName).filter(Boolean);
-  const unique = new Set(names);
-  if (unique.size < names.length || names.length < shooterWps.length) {
-    if (!(await confirmDialog(
-      'Some waypoints share the same photo name or have no name.\n\n' +
-      'Run "Uniquify WP names" first (Route menu), then Export KMZ before renaming photos.\n\n' +
-      'Continue anyway? (photos without a unique WP name will be skipped)'
-    ))) return;
-  }
-
-  // Count how many photos will be renamed.
-  let total = 0;
-  for (const [, photos] of state.photoByWp) {
-    for (const p of photos) {
-      if (p.type !== 'video') total++;
-    }
-  }
-  if (!total) { setStatus('No matched photos to rename.'); return; }
-
-  if (!(await confirmDialog(
-    `Rename ${total} photos on disk?\n\n` +
-    'Each file will be renamed so its DJI action-name matches its assigned waypoint.\n' +
-    'This cannot be undone automatically — make a copy of the folder first if unsure.'
-  ))) return;
-
-  // DJI filename up to and including the band char: DJI_YYYYMMDDHHMMSS_SEQNUM_BAND
-  // Everything after (the old action name) is replaced with the WP's current suffix.
-  const BASE_RE = /^(DJI_\d+_\d+_[TWZV])(?:_.+)?(\.[^.]+)$/i;
-
-  let renamed = 0, skipped = 0, errors = 0;
-  for (const [wpIdx, photos] of state.photoByWp) {
-    const wp = state.mission.waypoints[wpIdx];
-    const suffix = wp && wp.photoActionName;
-    if (!suffix) { skipped += photos.length; continue; }
-
-    for (const p of photos) {
-      if (p.type === 'video') continue;
-      const m = p.name.match(BASE_RE);
-      if (!m) { skipped++; continue; }
-
-      const newName = m[1] + '_' + suffix + m[2];
-      if (newName === p.name) { skipped++; continue; } // already correct
-
-      const result = await window.api.renamePhoto(p.name, newName);
-      if (result && result.ok) {
-        // Update in-memory state so the UI reflects the new name.
-        p.name = newName;
-        p.url = 'appfile://photos/' + encodeURIComponent(newName);
-        if (p.thumb && p.thumb.startsWith('appfile://')) {
-          p.thumb = p.url;
-        }
-        p.photoActionName = suffix;
-        renamed++;
-      } else {
-        console.warn('rename failed:', p.name, '→', newName, result && result.error);
-        errors++;
-      }
-    }
-  }
-
-  setStatus(`Renamed ${renamed} photos${skipped ? `, ${skipped} skipped` : ''}${errors ? `, ${errors} errors` : ''}.`);
-  renderPhotos();
-  if (state.selected >= 0) renderImageInfo(state.photoByWp.get(state.selected)?.[0] ?? null);
-}
-
-// ---------------------------------------------------------------------------
-// Uniquify WP photo-action names
-// ---------------------------------------------------------------------------
-function uniquifyWpNames() {
-  if (!state.mission) { setStatus('No route loaded.'); return; }
-  // Chars: uppercase alpha + digits, excluding visually ambiguous I/O/0/1
-  const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const gen6 = () => Array.from({ length: 6 }, () => CHARS[Math.floor(Math.random() * CHARS.length)]).join('');
-
-  // Count how many WPs share each photoActionName
-  const counts = new Map();
-  for (const wp of state.mission.waypoints) {
-    if (!wp.hasPhotoAction) continue;
-    const n = wp.photoActionName || '';
-    counts.set(n, (counts.get(n) || 0) + 1);
-  }
-
-  // All names already assigned (to avoid collisions when generating new ones)
-  const taken = new Set(state.mission.waypoints.map((wp) => wp.photoActionName).filter(Boolean));
-
-  const changes = []; // { i, before, after } per renamed waypoint — feeds undo/redo
-  for (const wp of state.mission.waypoints) {
-    if (!wp.hasPhotoAction) continue;
-    const base = wp.photoActionName || '';
-    if (counts.get(base) <= 1 && base) continue; // already unique
-
-    let code;
-    let candidate;
-    do {
-      code = gen6();
-      candidate = base ? base + '-' + code : code;
-    } while (taken.has(candidate));
-
-    taken.add(candidate);
-    changes.push({ i: wp.index, before: base, after: candidate });
-    wp.setPhotoActionName(candidate);
-  }
-
-  if (changes.length > 0) {
-    const applyNames = (key) => {
-      for (const c of changes) {
-        const wp = wpByIndex(c.i);
-        if (wp) wp.setPhotoActionName(c[key]);
-      }
-      renderList();
-      setDirty(true);
-    };
-    pushHistory({
-      label: `uniquify ${changes.length} WP names`,
-      undo: () => applyNames('before'),
-      redo: () => applyNames('after'),
-    });
-    setStatus(`Uniquified ${changes.length} WP photo names — export KMZ to save.`);
-    renderList();
-  } else {
-    setStatus('All WP photo names are already unique — no changes needed.');
-  }
 }
 
 // ---------------------------------------------------------------------------
